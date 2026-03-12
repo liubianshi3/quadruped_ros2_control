@@ -137,5 +137,5 @@ ros2 topic pub /cmd_vel geometry_msgs/msg/Twist \
 
 --- 
 
-**作者**: Manus AI (代用户生成)
+**作者**: 路志强
 **最后更新**: 2026年3月12日
