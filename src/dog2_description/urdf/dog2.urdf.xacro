@@ -37,20 +37,25 @@
   <!-- World and base -->
   <link name="base_footprint"/>
 
+  <!-- URDF整体重定位：统一平移量 -->
+  <xacro:property name="urdf_shift_x" value="0.9780"/>
+  <xacro:property name="urdf_shift_y" value="-0.87203"/>
+  <xacro:property name="urdf_shift_z" value="0.2649"/>
+
   <joint name="base_offset_joint" type="fixed">
     <parent link="base_footprint"/>
     <child link="base_link"/>
-    <origin xyz="1.2272 -0.7470 0.0" rpy="0 0 3.14159265"/>
+    <origin xyz="${1.2272 - urdf_shift_x} ${-0.7470 - urdf_shift_y} ${0.0 - urdf_shift_z}" rpy="0 0 3.14159265"/>
   </joint>
 
   <link name="base_link">
     <inertial>
-      <origin xyz="1.2272 -0.7470 0.2649" rpy="1.5708 0 0"/>
+      <origin xyz="${1.2272 - urdf_shift_x} ${-0.7470 - urdf_shift_y} ${0.2649 - urdf_shift_z}" rpy="1.5708 0 0"/>
       <mass value="6.0"/>
       <inertia ixx="0.0153" ixy="0.00011" ixz="0" iyy="0.052" iyz="0" izz="0.044"/>
     </inertial>
     <visual>
-      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <origin xyz="${0.0 - urdf_shift_x} ${0.0 - urdf_shift_y} ${0.0 - urdf_shift_z}" rpy="0 0 0"/>
       <geometry>
         <mesh filename="package://dog2_description/meshes/base_link.STL"/>
       </geometry>
@@ -59,7 +64,7 @@
       </material>
     </visual>
     <collision>
-      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <origin xyz="${0.0 - urdf_shift_x} ${0.0 - urdf_shift_y} ${0.0 - urdf_shift_z}" rpy="0 0 0"/>
       <geometry>
         <mesh filename="package://dog2_description/meshes/base_link.STL"/>
       </geometry>
@@ -72,74 +77,66 @@
   <xacro:property name="l4_inertia_xyz" value="0.0159999123716776 0.000737036465389251 0.0261570925915838"/>
 
   <!-- Leg macro -->
-  <xacro:macro name="leg" params="prefix leg_num xyz rpy p_low p_up thigh_xyz shin_xyz slider_inertia_xyz
+  <xacro:macro name="leg" params="prefix leg_num xyz_x xyz_y xyz_z rpy p_low p_up thigh_xyz shin_xyz slider_inertia_xyz
                                  hip_rpy:='0 0 1.5708' hip_xyz:='-0.016 0.0199 0.055'
                                  knee_xyz:='-0.0233 -0.055 0.0274'
                                  thigh_rpy:='0 0 0' thigh_col_rpy:='0 0 0'">
 
-  <link name="l${leg_num}">
+  <link name="${prefix}_rail_link">
     <inertial>
       <origin rpy="0 0 0" xyz="${slider_inertia_xyz}"/>
       <mass value="0.3"/>
-      <inertia ixx="0.000107100908138004" ixy="0" ixz="0" iyy="8.38648309010005E-05" iyz="0" izz="7.86994452918461E-05"/>
+      <inertia ixx="0.0001071" ixy="0" ixz="0" iyy="8.386e-05" iyz="0" izz="7.869e-05"/>
     </inertial>
     <visual>
-      <origin rpy="0 0 0" xyz="0 0 0"/>
       <geometry>
         <mesh filename="package://dog2_description/meshes/l${leg_num}.STL"/>
       </geometry>
-      <material name="">
-        <color rgba="1 1 1 1"/>
-      </material>
+      <material name=""><color rgba="1 1 1 1"/></material>
     </visual>
     <collision>
-      <origin rpy="0 0 0" xyz="0 0 0"/>
       <geometry>
-        <mesh filename="package://dog2_description/meshes/l${leg_num}.STL"/>
+        <mesh filename="package://dog2_description/meshes/collision/l${leg_num}_collision.STL"/>
       </geometry>
     </collision>
   </link>
 
-  <joint name="j${leg_num}" type="prismatic">
-    <origin rpy="${rpy}" xyz="${xyz}"/>
+  <joint name="${prefix}_rail_joint" type="prismatic">
+    <origin rpy="${rpy}" xyz="${xyz_x - urdf_shift_x} ${xyz_y - urdf_shift_y} ${xyz_z - urdf_shift_z}"/>
     <parent link="base_link"/>
-    <child link="l${leg_num}"/>
+    <child link="${prefix}_rail_link"/>
     <axis xyz="-1 0 0"/>
     <limit effort="${prismatic_effort}" lower="${p_low}" upper="${p_up}" velocity="${prismatic_velocity}"/>
   </joint>
 
-  <link name="${prefix}_hip_link">
+  <link name="${prefix}_coxa_link">
     <inertial>
-      <origin rpy="0 0 0" xyz="-0.0233000000000003 -0.038305456702832 0.000879463367713051"/>
+      <origin rpy="0 0 0" xyz="-0.0233 -0.0383 0.000879"/>
       <mass value="0.25"/>
       <inertia ixx="0.0001" ixy="0" ixz="0" iyy="0.0001" iyz="0" izz="0.0001"/>
     </inertial>
     <visual>
-      <origin rpy="0 0 0" xyz="0 0 0"/>
       <geometry>
         <mesh filename="package://dog2_description/meshes/l${leg_num}1.STL"/>
       </geometry>
-      <material name="">
-        <color rgba="0.266666666666667 0.529411764705882 1 1"/>
-      </material>
+      <material name=""><color rgba="0.266 0.529 1 1"/></material>
     </visual>
     <collision>
-      <origin rpy="0 0 0" xyz="0 0 0"/>
       <geometry>
-        <mesh filename="package://dog2_description/meshes/l${leg_num}1.STL"/>
+        <mesh filename="package://dog2_description/meshes/collision/l${leg_num}1_collision.STL"/>
       </geometry>
     </collision>
   </link>
 
-  <joint name="${prefix}_haa_joint" type="revolute">
+  <joint name="${prefix}_coxa_joint" type="revolute">
     <origin rpy="${hip_rpy}" xyz="${hip_xyz}"/>
-    <parent link="l${leg_num}"/>
-    <child link="${prefix}_hip_link"/>
+    <parent link="${prefix}_rail_link"/>
+    <child link="${prefix}_coxa_link"/>
     <axis xyz="-1 0 0"/>
     <limit effort="${hip_effort}" lower="${hip_lower_limit}" upper="${hip_upper_limit}" velocity="${hip_velocity}"/>
   </joint>
 
-  <link name="${prefix}_upper_leg_link">
+  <link name="${prefix}_femur_link">
     <inertial>
       <origin rpy="0 0 0" xyz="${thigh_xyz}"/>
       <mass value="0.4"/>
@@ -150,58 +147,52 @@
       <geometry>
         <mesh filename="package://dog2_description/meshes/l${leg_num}11.STL"/>
       </geometry>
-      <material name="">
-        <color rgba="1 1 1 1"/>
-      </material>
+      <material name=""><color rgba="1 1 1 1"/></material>
     </visual>
     <collision>
       <origin rpy="${thigh_col_rpy}" xyz="0 0 0"/>
       <geometry>
-        <mesh filename="package://dog2_description/meshes/l${leg_num}11.STL"/>
+        <mesh filename="package://dog2_description/meshes/collision/l${leg_num}11_collision.STL"/>
       </geometry>
     </collision>
   </link>
 
-  <joint name="${prefix}_hfe_joint" type="revolute">
+  <joint name="${prefix}_femur_joint" type="revolute">
     <origin rpy="1.5708 1.5708 0" xyz="${knee_xyz}"/>
-    <parent link="${prefix}_hip_link"/>
-    <child link="${prefix}_upper_leg_link"/>
+    <parent link="${prefix}_coxa_link"/>
+    <child link="${prefix}_femur_link"/>
     <axis xyz="-1 0 0"/>
     <limit effort="${knee_effort}" lower="${knee_lower_limit}" upper="${knee_upper_limit}" velocity="${knee_velocity}"/>
   </joint>
 
-  <link name="${prefix}_lower_leg_link">
+  <link name="${prefix}_tibia_link">
     <inertial>
       <origin rpy="0 0 0" xyz="${shin_xyz}"/>
       <mass value="0.5"/>
-      <inertia ixx="0.004517" ixy="0.00000870" ixz="0.00000420" iyy="0.000975" iyz="-0.00176971" izz="0.003666"/>
+      <inertia ixx="0.004517" ixy="0.0000087" ixz="0.0000042" iyy="0.000975" iyz="-0.001769" izz="0.003666"/>
     </inertial>
     <visual>
-      <origin rpy="0 0 0" xyz="0 0 0"/>
       <geometry>
         <mesh filename="package://dog2_description/meshes/l${leg_num}111.STL"/>
       </geometry>
-      <material name="">
-        <color rgba="1 1 1 1"/>
-      </material>
+      <material name=""><color rgba="1 1 1 1"/></material>
     </visual>
     <collision>
-      <origin rpy="0 0 0" xyz="0 0 0"/>
       <geometry>
-        <mesh filename="package://dog2_description/meshes/l${leg_num}111.STL"/>
+        <mesh filename="package://dog2_description/meshes/collision/l${leg_num}111_collision.STL"/>
       </geometry>
     </collision>
   </link>
 
-  <joint name="${prefix}_kfe_joint" type="revolute">
+  <joint name="${prefix}_tibia_joint" type="revolute">
     <origin rpy="0 0 0" xyz="0 -0.15201 0.12997"/>
-    <parent link="${prefix}_upper_leg_link"/>
-    <child link="${prefix}_lower_leg_link"/>
+    <parent link="${prefix}_femur_link"/>
+    <child link="${prefix}_tibia_link"/>
     <axis xyz="-1 0 0"/>
     <limit effort="${knee_effort}" lower="${knee_lower_limit}" upper="${knee_upper_limit}" velocity="${knee_velocity}"/>
   </joint>
 
-  <gazebo reference="${prefix}_lower_leg_link">
+  <gazebo reference="${prefix}_tibia_link">
     <mu1>1.0</mu1>
     <mu2>1.0</mu2>
     <kp>1000000.0</kp>
@@ -215,21 +206,21 @@
 
   <!-- Leg instantiations -->
   <!-- Leg 1: Front Left (lf) -->
-  <xacro:leg prefix="lf" leg_num="1" xyz="1.1026 -0.80953 0.2649" rpy="1.5708 0 0" p_low="-0.111" p_up="0.0"
+  <xacro:leg prefix="lf" leg_num="1" xyz_x="1.1026" xyz_y="-0.80953" xyz_z="0.2649" rpy="1.5708 0 0" p_low="-0.111" p_up="0.0"
              thigh_xyz="${leg12_thigh_xyz}" shin_xyz="${leg12_shin_xyz}" slider_inertia_xyz="${l1_inertia_xyz}"/>
 
-  <!-- Leg 2: Front Right (rf) -->
-  <xacro:leg prefix="rf" leg_num="2" xyz="1.3491 -0.80953 0.2649" rpy="1.5708 0 0" p_low="0.0" p_up="0.111"
+  <!-- Leg 2: Rear Left (lh) -->
+  <xacro:leg prefix="lh" leg_num="2" xyz_x="1.3491" xyz_y="-0.80953" xyz_z="0.2649" rpy="1.5708 0 0" p_low="0.0" p_up="0.111"
              thigh_xyz="${leg12_thigh_xyz}" shin_xyz="${leg12_shin_xyz}" slider_inertia_xyz="${l2_inertia_xyz}"
              hip_xyz="0.016 0.0199 0.055"/>
 
-  <!-- Leg 3: Rear Left (lh) -->
-  <xacro:leg prefix="lh" leg_num="3" xyz="1.3491 -0.68953 0.2649" rpy="1.5708 0 -3.1416" p_low="-0.111" p_up="0.0"
+  <!-- Leg 3: Rear Right (rh) -->
+  <xacro:leg prefix="rh" leg_num="3" xyz_x="1.3491" xyz_y="-0.68953" xyz_z="0.2649" rpy="1.5708 0 -3.1416" p_low="-0.111" p_up="0.0"
              thigh_xyz="${leg3_thigh_xyz}" shin_xyz="${leg3_shin_xyz}" slider_inertia_xyz="${l3_inertia_xyz}"
              hip_rpy="3.1416 0 1.5708" knee_xyz="-0.0233 -0.055 -0.0254"/>
 
-  <!-- Leg 4: Rear Right (rh) -->
-  <xacro:leg prefix="rh" leg_num="4" xyz="1.1071 -0.68953 0.2649" rpy="1.5708 0 -3.1416" p_low="0.0" p_up="0.111"
+  <!-- Leg 4: Front Right (rf) -->
+  <xacro:leg prefix="rf" leg_num="4" xyz_x="1.1071" xyz_y="-0.68953" xyz_z="0.2649" rpy="1.5708 0 -3.1416" p_low="0.0" p_up="0.111"
              thigh_xyz="${leg4_thigh_xyz}" shin_xyz="${leg4_shin_xyz}" slider_inertia_xyz="${l4_inertia_xyz}"
              hip_rpy="3.1416 0 1.5708" hip_xyz="0.0116 0.0199 0.055" knee_xyz="-0.0233 -0.055 -0.0254"
              thigh_rpy="0 3.1416 0" thigh_col_rpy="0 3.1416 0"/>
@@ -239,82 +230,82 @@
     <hardware>
       <plugin>gz_ros2_control/GazeboSimSystem</plugin>
     </hardware>
-    <joint name="j1">
+    <joint name="lf_rail_joint">
       <command_interface name="position"/>
       <state_interface name="position"/>
       <state_interface name="velocity"/>
     </joint>
-    <joint name="lf_haa_joint">
+    <joint name="lf_coxa_joint">
       <command_interface name="position"/>
       <state_interface name="position"/>
       <state_interface name="velocity"/>
     </joint>
-    <joint name="lf_hfe_joint">
+    <joint name="lf_femur_joint">
       <command_interface name="position"/>
       <state_interface name="position"/>
       <state_interface name="velocity"/>
     </joint>
-    <joint name="lf_kfe_joint">
+    <joint name="lf_tibia_joint">
       <command_interface name="position"/>
       <state_interface name="position"/>
       <state_interface name="velocity"/>
     </joint>
-    <joint name="j2">
+    <joint name="lh_rail_joint">
       <command_interface name="position"/>
       <state_interface name="position"/>
       <state_interface name="velocity"/>
     </joint>
-    <joint name="rf_haa_joint">
+    <joint name="lh_coxa_joint">
       <command_interface name="position"/>
       <state_interface name="position"/>
       <state_interface name="velocity"/>
     </joint>
-    <joint name="rf_hfe_joint">
+    <joint name="lh_femur_joint">
       <command_interface name="position"/>
       <state_interface name="position"/>
       <state_interface name="velocity"/>
     </joint>
-    <joint name="rf_kfe_joint">
+    <joint name="lh_tibia_joint">
       <command_interface name="position"/>
       <state_interface name="position"/>
       <state_interface name="velocity"/>
     </joint>
-    <joint name="j3">
+    <joint name="rh_rail_joint">
       <command_interface name="position"/>
       <state_interface name="position"/>
       <state_interface name="velocity"/>
     </joint>
-    <joint name="lh_haa_joint">
+    <joint name="rh_coxa_joint">
       <command_interface name="position"/>
       <state_interface name="position"/>
       <state_interface name="velocity"/>
     </joint>
-    <joint name="lh_hfe_joint">
+    <joint name="rh_femur_joint">
       <command_interface name="position"/>
       <state_interface name="position"/>
       <state_interface name="velocity"/>
     </joint>
-    <joint name="lh_kfe_joint">
+    <joint name="rh_tibia_joint">
       <command_interface name="position"/>
       <state_interface name="position"/>
       <state_interface name="velocity"/>
     </joint>
-    <joint name="j4">
+    <joint name="rf_rail_joint">
       <command_interface name="position"/>
       <state_interface name="position"/>
       <state_interface name="velocity"/>
     </joint>
-    <joint name="rh_haa_joint">
+    <joint name="rf_coxa_joint">
       <command_interface name="position"/>
       <state_interface name="position"/>
       <state_interface name="velocity"/>
     </joint>
-    <joint name="rh_hfe_joint">
+    <joint name="rf_femur_joint">
       <command_interface name="position"/>
       <state_interface name="position"/>
       <state_interface name="velocity"/>
     </joint>
-    <joint name="rh_kfe_joint">
+    <joint name="rf_tibia_joint">
       <command_interface name="position"/>
       <state_interface name="position"/>
       <state_interface name="velocity"/>

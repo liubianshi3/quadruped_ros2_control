@@ -67,13 +67,12 @@ def create_leg_parameters() -> Dict[str, LegParameters]:
         'kfe': (-2.8, 2.8),      # KFE关节限位（约±160度）
     }
     
-    # 腿部1：前左 (lf)
-    # 配置坐标系基座位置（米）
+    # 腿部1：左前 (lf) -> leg1
     leg1_params = LegParameters(
         leg_id='lf',
         leg_num=1,
-        base_position=np.array([0.1246, 0.0625, 0.0]),
-        base_rotation=np.array([0.0, 0.0, 0.0]),  # 临时验证：强制对齐
+        base_position=np.array([0.1535, 0.0725, 0.0]),
+        base_rotation=np.array([1.5708, 0.0, 0.0]),
         link_lengths=link_lengths,
         joint_limits={
             'rail': (-0.111, 0.0),  # 前左导轨向负方向移动
@@ -81,27 +80,13 @@ def create_leg_parameters() -> Dict[str, LegParameters]:
         },
         rail_locked=True
     )
-    
-    # 腿部2：前右 (rf)
+
+    # 腿部2：左后 (lh) -> leg2
     leg2_params = LegParameters(
-        leg_id='rf',
-        leg_num=2,
-        base_position=np.array([0.1246, -0.0625, 0.0]),
-        base_rotation=np.array([0.0, 0.0, 0.0]),  # 基座坐标系对齐
-        link_lengths=link_lengths,
-        joint_limits={
-            'rail': (0.0, 0.111),  # 前右导轨向正方向移动
-            **joint_limits_template
-        },
-        rail_locked=True
-    )
-    
-    # 腿部3：后左 (lh)
-    leg3_params = LegParameters(
         leg_id='lh',
-        leg_num=3,
-        base_position=np.array([-0.1246, 0.0625, 0.0]),
-        base_rotation=np.array([0.0, 0.0, 0.0]),  # 临时验证：强制对齐
+        leg_num=2,
+        base_position=np.array([-0.1535, 0.0725, 0.0]),
+        base_rotation=np.array([1.5708, 0.0, -3.1416]),
         link_lengths=link_lengths,
         joint_limits={
             'rail': (-0.111, 0.0),  # 后左导轨向负方向移动
@@ -109,13 +94,13 @@ def create_leg_parameters() -> Dict[str, LegParameters]:
         },
         rail_locked=True
     )
-    
-    # 腿部4：后右 (rh)
-    leg4_params = LegParameters(
+
+    # 腿部3：右后 (rh) -> leg3
+    leg3_params = LegParameters(
         leg_id='rh',
-        leg_num=4,
-        base_position=np.array([-0.1246, -0.0625, 0.0]),
-        base_rotation=np.array([0.0, 0.0, 3.1416]),  # 后腿绕Z轴翻转
+        leg_num=3,
+        base_position=np.array([-0.1535, -0.0725, 0.0]),
+        base_rotation=np.array([1.5708, 0.0, -3.1416]),
         link_lengths=link_lengths,
         joint_limits={
             'rail': (0.0, 0.111),  # 后右导轨向正方向移动
@@ -123,12 +108,26 @@ def create_leg_parameters() -> Dict[str, LegParameters]:
         },
         rail_locked=True
     )
-    
+
+    # 腿部4：右前 (rf) -> leg4
+    leg4_params = LegParameters(
+        leg_id='rf',
+        leg_num=4,
+        base_position=np.array([0.1535, -0.0725, 0.0]),
+        base_rotation=np.array([1.5708, 0.0, 0.0]),
+        link_lengths=link_lengths,
+        joint_limits={
+            'rail': (0.0, 0.111),  # 前右导轨向正方向移动
+            **joint_limits_template
+        },
+        rail_locked=True
+    )
+
     return {
         'lf': leg1_params,
-        'rf': leg2_params,
-        'lh': leg3_params,
-        'rh': leg4_params,
+        'lh': leg2_params,
+        'rh': leg3_params,
+        'rf': leg4_params,
     }
 
 

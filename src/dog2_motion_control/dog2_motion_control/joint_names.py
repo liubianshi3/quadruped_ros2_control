@@ -8,18 +8,18 @@ from typing import Dict, List
 
 # 腿部编号到URDF前缀的映射
 LEG_PREFIX_MAP: Dict[int, str] = {
-    1: 'lf',  # leg1 = 前左 (left front)
-    2: 'rf',  # leg2 = 前右 (right front)
-    3: 'lh',  # leg3 = 后左 (left hind)
-    4: 'rh',  # leg4 = 后右 (right hind)
+    1: 'lf',  # leg1 = 左前 (left front)
+    2: 'lh',  # leg2 = 左后 (left hind)
+    3: 'rh',  # leg3 = 右后 (right hind)
+    4: 'rf',  # leg4 = 右前 (right front)
 }
 
 # 反向映射：URDF前缀到腿部编号
 PREFIX_TO_LEG_MAP: Dict[str, int] = {
     'lf': 1,
-    'rf': 2,
-    'lh': 3,
-    'rh': 4,
+    'lh': 2,
+    'rh': 3,
+    'rf': 4,
 }
 
 # 导轨关节名称（prismatic joints）
@@ -68,9 +68,9 @@ def get_all_joint_names() -> List[str]:
     Returns:
         关节名称列表，顺序为：
         j1, lf_haa_joint, lf_hfe_joint, lf_kfe_joint,
-        j2, rf_haa_joint, rf_hfe_joint, rf_kfe_joint,
-        j3, lh_haa_joint, lh_hfe_joint, lh_kfe_joint,
-        j4, rh_haa_joint, rh_hfe_joint, rh_kfe_joint
+        j2, lh_haa_joint, lh_hfe_joint, lh_kfe_joint,
+        j3, rh_haa_joint, rh_hfe_joint, rh_kfe_joint,
+        j4, rf_haa_joint, rf_hfe_joint, rf_kfe_joint
     """
     joint_names = []
     for leg_num in [1, 2, 3, 4]:

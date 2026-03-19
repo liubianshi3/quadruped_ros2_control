@@ -7,11 +7,11 @@ ros__parameters:
     duty_factor: 0.75
     body_height: 0.2
     gait_type: "crawl"
-    leg_sequence: ["leg1", "leg3", "leg2", "leg4"]
+    leg_sequence: ["leg1", "leg2", "leg3", "leg4"]
     phase_offsets:
       leg1: 0.0
-      leg2: 180.0
-      leg3: 90.0
+      leg2: 90.0
+      leg3: 180.0
       leg4: 270.0
   
   joint_limits:
@@ -88,12 +88,12 @@ ros__parameters:
     l2_hfe_to_kfe: 0.152
     l3_kfe_to_foot: 0.299
     leg_base_positions:
-      leg1: [0.1535, 0.0725, 0.0]
-      leg2: [0.1535, -0.0725, 0.0]
-      leg3: [-0.1535, 0.0725, 0.0]
-      leg4: [-0.1535, -0.0725, 0.0]
+      leg1: [0.1535, 0.0725, 0.0]    # LF
+      leg2: [-0.1535, 0.0725, 0.0]   # LH
+      leg3: [-0.1535, -0.0725, 0.0]  # RH
+      leg4: [0.1535, -0.0725, 0.0]   # RF
     leg_base_rotations:
-      leg1: [1.5708, 0.0, 0.0]
-      leg2: [1.5708, 0.0, 0.0]
-      leg3: [1.5708, 0.0, -3.1416]
-      leg4: [1.5708, 0.0, -3.1416]
+      leg1: [1.5708, 0.0, 0.0]       # LF
+      leg2: [1.5708, 0.0, -3.1416]   # LH
+      leg3: [1.5708, 0.0, -3.1416]   # RH
+      leg4: [1.5708, 0.0, 0.0]       # RF
