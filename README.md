@@ -145,5 +145,5 @@ source install/setup.bash
 
 ## 维护者
 
-- 你的姓名 / 团队名
-- 联系方式：your-email@example.com
+- 你的姓名 路志强
+- 联系方式：17515135916@163.com
