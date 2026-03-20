@@ -1,8 +1,0 @@
----
-description: Always read DEVELOPMENT_LOG at session start
-alwaysApply: true
----
-
-# Read DEVELOPMENT_LOG on new sessions
-
-At the start of every new conversation, read `/home/dell/aperfect/carbot_ws/DEVELOPMENT_LOG.md` to get the latest project context before making changes or answering questions.
