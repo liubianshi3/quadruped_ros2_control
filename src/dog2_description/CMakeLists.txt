@@ -8,39 +8,25 @@ option(DOG2_ENABLE_URDF_SHIFT_BOUNDARY_CHECK "Enable URDF shift boundary validat
 # Find xacro for URDF generation
 find_program(XACRO xacro)
 if(NOT XACRO)
-  message(WARNING "xacro not found. URDF will not be auto-generated from Xacro.")
+  message(WARNING "xacro not found. Runtime robot_description expansion and URDF boundary checks may be unavailable.")
 else()
-  # Generate URDF from Xacro at build time - TEMPORARILY DISABLED
-  # set(XACRO_FILE "${CMAKE_CURRENT_SOURCE_DIR}/urdf/dog2.urdf.xacro")
-  # set(URDF_FILE "${CMAKE_CURRENT_SOURCE_DIR}/urdf/dog2.urdf")
-  
-  # add_custom_command(
-  #   OUTPUT ${URDF_FILE}
-  #   COMMAND ${XACRO} ${XACRO_FILE} -o ${URDF_FILE}
-  #   DEPENDS ${XACRO_FILE}
-  #   COMMENT "Generating URDF from Xacro: dog2.urdf.xacro -> dog2.urdf"
-  # )
-  
-  # add_custom_target(generate_urdf ALL DEPENDS ${URDF_FILE})
-  
-  # # Validate URDF after generation
-  # find_program(PYTHON3 python3)
-  # if(PYTHON3)
-  #   set(VALIDATE_SCRIPT "${CMAKE_CURRENT_SOURCE_DIR}/../scripts/validate_urdf_limits.py")
-  #   if(EXISTS ${VALIDATE_SCRIPT})
-  #     add_custom_command(
-  #       TARGET generate_urdf POST_BUILD
-  #       COMMAND ${PYTHON3} ${VALIDATE_SCRIPT} ${URDF_FILE}
-  #       COMMENT "Validating generated URDF joint limits"
-  #     )
-  #   endif()
-  # endif()
+  # Canonical robot description lives in urdf/dog2.urdf.xacro.
+  # Committed static URDF snapshots are intentionally not generated at build
+  # time. Export a snapshot explicitly when you need one for inspection, e.g.:
+  #   xacro ${CMAKE_CURRENT_SOURCE_DIR}/urdf/dog2.urdf.xacro \
+  #     controllers_yaml:=${CMAKE_CURRENT_SOURCE_DIR}/config/ros2_controllers.yaml \
+  #     -o /tmp/dog2.urdf
 endif()
 
 install(
   DIRECTORY urdf meshes launch rviz config scripts
   DESTINATION share/${PROJECT_NAME}
   USE_SOURCE_PERMISSIONS
+)
+
+install(
+  FILES config/migration_stage2_stand.json
+  DESTINATION share/${PROJECT_NAME}/config
 )
 
 # Install Python scripts as executables
@@ -52,6 +38,8 @@ install(
     scripts/spider_ik_stand.py
     scripts/spider_basic_motion_controller.py
     scripts/check_urdf_shift_boundary.py
+    scripts/export_dog2_urdf.py
+    scripts/verify_stage2_rail_geometry.py
   DESTINATION lib/${PROJECT_NAME}
 )
 
@@ -67,6 +55,16 @@ if(BUILD_TESTING AND DOG2_ENABLE_URDF_SHIFT_BOUNDARY_CHECK)
         ${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_urdf_shift_boundary.py
         ${CMAKE_CURRENT_SOURCE_DIR}/urdf/dog2.urdf.xacro
         --strict
+    )
+    add_test(
+      NAME dog2_stage2_rail_geometry_check
+      COMMAND
+        ${PYTHON3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/scripts/verify_stage2_rail_geometry.py
+        --xacro
+        ${CMAKE_CURRENT_SOURCE_DIR}/urdf/dog2.urdf.xacro
+        --golden
+        ${CMAKE_CURRENT_SOURCE_DIR}/config/migration_stage2_stand.json
     )
   else()
     message(WARNING "Skip dog2_urdf_shift_boundary_check: python3 or xacro not found")

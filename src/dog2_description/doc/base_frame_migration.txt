@@ -1,0 +1,53 @@
+Dog2 base frame migration — current state (Stage 4)
+
+Frame names (no aliases):
+  base_footprint  — ground / planning chain top
+  base_link       — semantic trunk root for ROS/control/Pinocchio; X forward, Y left, Z up
+  base_link_cad   — CAD visual shell only
+
+Current semantic definition:
+  base_link is intentionally redefined near the centroid of the four leg mounts.
+  It is not required to coincide with the CAD shell origin.
+
+  semantic base_link origin in the historical trunk-local coordinates:
+    x = 0.248975
+    y = 0.122500
+    z = 0.0
+
+Current chain:
+  base_footprint -> base_offset_joint -> base_link
+    -> base_link_cad_fixed (non-identity shell offset) -> base_link_cad
+  base_link -> *_leg_mount_fixed -> *_leg_mount -> *_rail_joint -> rail_link -> …
+
+Current ownership split:
+  base_link
+    - trunk inertial
+    - trunk collision primitive
+    - all four leg mounts
+
+  base_link_cad
+    - trunk visual shell only
+
+Current fixed shell offset:
+  base_link_cad_fixed xyz = (-0.248975, -0.122500, 0.0)
+  base_link_cad_fixed rpy = (0, 0, 0)
+
+Current leg-mount anchors in semantic base_link:
+  lf_leg_mount_fixed = (-0.124375, -0.060000, 0.0)
+  lh_leg_mount_fixed = ( 0.122125, -0.060000, 0.0)
+  rh_leg_mount_fixed = ( 0.122125,  0.060000, 0.0)
+  rf_leg_mount_fixed = (-0.119875,  0.060000, 0.0)
+
+Current trunk collision primitive on base_link:
+  center = (-0.005860, -0.000001, -0.006837)
+  size   = ( 0.342000,  0.160000,  0.100333)
+
+What is intentionally NOT cleaned up yet:
+  - urdf_shift_x / urdf_shift_y / urdf_shift_z
+  - base_offset_joint
+  - Gazebo-specific interpretation and spawn tuning
+
+Verification:
+  python3 src/dog2_description/scripts/check_urdf_shift_boundary.py src/dog2_description/urdf/dog2.urdf.xacro
+  python3 src/dog2_description/scripts/check_joint_semantics.py src/dog2_description/urdf/dog2.urdf.xacro
+  python3 src/dog2_description/scripts/verify_stage2_rail_geometry.py --xacro src/dog2_description/urdf/dog2.urdf.xacro --golden src/dog2_description/config/migration_stage2_stand.json

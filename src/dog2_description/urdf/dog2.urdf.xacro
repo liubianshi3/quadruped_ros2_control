@@ -89,9 +89,10 @@
 
     UNIQUE COMPENSATION LAYER (ENFORCED):
       * urdf_shift is used ONLY in base_offset_joint.
-      * Leg rail anchors are expressed in base_link-local coordinates (Stage 2:
-        *_rail_joint parent is base_link; same xyz as Stage1 since base_link_cad_fixed
-        is identity to base_link_cad).
+      * Leg installation frames are expressed in base_link-local coordinates
+        (Stage 2: *_leg_mount_fixed attaches each leg mount to base_link; same
+        xyz/rpy as Stage 1 since base_link_cad_fixed is identity to
+        base_link_cad).
 
     STRICT BOUNDARY:
       * DO NOT apply this shift again in TF publishers, sensor extrinsics,
@@ -106,6 +107,25 @@
   <xacro:property name="urdf_shift_x" value="0.9780"/>
   <xacro:property name="urdf_shift_y" value="-0.87203"/>
   <xacro:property name="urdf_shift_z" value="0.2649"/>
+  <!--
+    Semantic trunk root definition
+    ============================================================
+    base_link is intentionally redefined as the control / dynamics / leg-install
+    root near the geometric center of the four leg mounts. It is not required to
+    coincide with the CAD shell origin.
+
+    base_link_cad_fixed therefore carries the shell offset, while leg mounts,
+    trunk inertial, and trunk collision are all re-expressed in this semantic
+    base_link frame.
+  -->
+  <xacro:property name="base_link_semantic_origin_x" value="0.248975"/>
+  <xacro:property name="base_link_semantic_origin_y" value="0.122500"/>
+  <xacro:property name="base_link_semantic_origin_z" value="0.0"/>
+  <!-- Conservative trunk collision box derived from the legacy collision mesh bbox.
+       The upper ~1/3 is trimmed away while keeping the lower envelope unchanged. -->
+  <xacro:property name="trunk_collision_box_xyz"
+                  value="${0.243115 - base_link_semantic_origin_x} ${0.122499 - base_link_semantic_origin_y} ${-0.006837 - base_link_semantic_origin_z}"/>
+  <xacro:property name="trunk_collision_box_size" value="0.342 0.160 0.100333"/>
 
   <joint name="base_offset_joint" type="fixed">
     <parent link="base_footprint"/>
@@ -116,26 +136,32 @@
   <!--
     Dual-base scaffold (migration):
       base_link        = ROS / control / Pinocchio root frame (X front, Y left, Z up),
-                         now carrying trunk inertial.
-      base_link_cad    = CAD trunk visual/collision carrier; rail legs parent = base_link (Stage 2).
-      base_link_cad_fixed = identity between base_link and base_link_cad.
+                         now carrying trunk inertial + collision.
+      base_link_cad    = CAD trunk visual carrier; leg mounts parent = base_link.
+      base_link_cad_fixed = fixed shell offset from the semantic trunk root.
     NOTE:
-      Stage 3 (partial): trunk inertial has been moved to base_link because
-      base_link_cad_fixed is currently identity. Collision remains on
-      base_link_cad and will be migrated in the next step.
+      Stage 4 (current): base_link has been formally redefined around the
+      leg-mount centroid. base_link_cad is now a pure shell carrier attached
+      through a non-identity fixed transform.
   -->
   <link name="base_link">
     <inertial>
-      <origin xyz="0.2492 0.12503 0.0" rpy="${half_pi} 0 0"/>
+      <origin xyz="${0.2492 - base_link_semantic_origin_x} ${0.12503 - base_link_semantic_origin_y} ${0.0 - base_link_semantic_origin_z}" rpy="${half_pi} 0 0"/>
       <mass value="6.0"/>
       <inertia ixx="0.0153" ixy="0.00011" ixz="0" iyy="0.052" iyz="0" izz="0.044"/>
     </inertial>
+    <collision>
+      <origin xyz="${trunk_collision_box_xyz}" rpy="0 0 0"/>
+      <geometry>
+        <box size="${trunk_collision_box_size}"/>
+      </geometry>
+    </collision>
   </link>
 
   <joint name="base_link_cad_fixed" type="fixed">
     <parent link="base_link"/>
     <child link="base_link_cad"/>
-    <origin xyz="0 0 0" rpy="0 0 0"/>
+    <origin xyz="${0.0 - base_link_semantic_origin_x} ${0.0 - base_link_semantic_origin_y} ${0.0 - base_link_semantic_origin_z}" rpy="0 0 0"/>
   </joint>
 
   <link name="base_link_cad">
@@ -148,12 +174,6 @@
         <color rgba="0.752941176470588 0.752941176470588 0.752941176470588 1"/>
       </material>
     </visual>
-    <collision>
-      <origin xyz="-0.9780 0.87203 -0.2649" rpy="0 0 0"/>
-      <geometry>
-        <mesh filename="package://dog2_description/meshes/base_link.STL"/>
-      </geometry>
-    </collision>
   </link>
 
   <xacro:property name="l1_inertia_xyz" value="-0.0159999123716776 0.000737036465389251 0.0261570925915838"/>
@@ -193,7 +213,7 @@
     ========================================================================
   -->
   <!-- Leg macro -->
-  <xacro:macro name="leg" params="prefix leg_num xyz_x xyz_y xyz_z rpy rail_axis p_low p_up thigh_xyz shin_xyz slider_inertia_xyz foot_tip_xyz
+  <xacro:macro name="leg" params="prefix leg_num parent_link rail_axis p_low p_up thigh_xyz shin_xyz slider_inertia_xyz foot_tip_xyz
                                  hip_rpy:='0 0 ${half_pi}' hip_xyz:='-0.016 0.0199 0.055'
                                  knee_xyz:='-0.0233 -0.055 0.0274'
                                  thigh_rpy:='0 0 0' thigh_col_rpy:='0 0 0'">
@@ -218,8 +238,8 @@
   </link>
 
   <joint name="${prefix}_rail_joint" type="prismatic">
-    <origin rpy="${rpy}" xyz="${xyz_x} ${xyz_y} ${xyz_z}"/>
-    <parent link="base_link"/>
+    <origin rpy="0 0 0" xyz="0 0 0"/>
+    <parent link="${parent_link}"/>
     <child link="${prefix}_rail_link"/>
     <!-- +q translates along base_link +X (see kinematic contract block above). -->
     <axis xyz="${rail_axis}"/>
@@ -370,31 +390,63 @@
 
   <!-- Leg instantiations -->
   <!--
-    Leg topology reminder (base_link-local rail anchors):
+    *_leg_mount is the fixed installation frame of each leg relative to base_link.
+    left/right/front/rear differences should be expressed here.
+    The leg macro below represents a reusable standard leg chain.
+
+    Leg topology reminder (base_link-local installation frames):
       - lf: left front  (左前)
       - lh: left rear   (左后)
       - rh: right rear  (右后)
       - rf: right front (右前)
   -->
-  <!-- Leg 1: Front Left (lf) base_link-local anchor -->
-  <xacro:leg prefix="lf" leg_num="1" xyz_x="0.1246" xyz_y="0.0625" xyz_z="0.0" rpy="${leg_rail_rpy_L}" rail_axis="${leg_rail_axis_L}" p_low="0.0" p_up="0.111"
+  <link name="lf_leg_mount"/>
+  <joint name="lf_leg_mount_fixed" type="fixed">
+    <parent link="base_link"/>
+    <child link="lf_leg_mount"/>
+    <origin xyz="${0.1246 - base_link_semantic_origin_x} ${0.0625 - base_link_semantic_origin_y} ${0.0 - base_link_semantic_origin_z}" rpy="${leg_rail_rpy_L}"/>
+  </joint>
+
+  <link name="lh_leg_mount"/>
+  <joint name="lh_leg_mount_fixed" type="fixed">
+    <parent link="base_link"/>
+    <child link="lh_leg_mount"/>
+    <origin xyz="${0.3711 - base_link_semantic_origin_x} ${0.0625 - base_link_semantic_origin_y} ${0.0 - base_link_semantic_origin_z}" rpy="${leg_rail_rpy_L}"/>
+  </joint>
+
+  <link name="rh_leg_mount"/>
+  <joint name="rh_leg_mount_fixed" type="fixed">
+    <parent link="base_link"/>
+    <child link="rh_leg_mount"/>
+    <origin xyz="${0.3711 - base_link_semantic_origin_x} ${0.1825 - base_link_semantic_origin_y} ${0.0 - base_link_semantic_origin_z}" rpy="${leg_rail_rpy_R}"/>
+  </joint>
+
+  <link name="rf_leg_mount"/>
+  <joint name="rf_leg_mount_fixed" type="fixed">
+    <parent link="base_link"/>
+    <child link="rf_leg_mount"/>
+    <origin xyz="${0.1291 - base_link_semantic_origin_x} ${0.1825 - base_link_semantic_origin_y} ${0.0 - base_link_semantic_origin_z}" rpy="${leg_rail_rpy_R}"/>
+  </joint>
+
+  <!-- Leg 1: Front Left (lf) via lf_leg_mount -->
+  <xacro:leg prefix="lf" leg_num="1" parent_link="lf_leg_mount" rail_axis="${leg_rail_axis_L}" p_low="0.0" p_up="0.111"
              thigh_xyz="${leg12_thigh_xyz}" shin_xyz="${leg12_shin_xyz}" slider_inertia_xyz="${l1_inertia_xyz}"
              foot_tip_xyz="${leg12_foot_tip_xyz}"/>
 
-  <!-- Leg 2: Rear Left (lh) base_link-local anchor -->
-  <xacro:leg prefix="lh" leg_num="2" xyz_x="0.3711" xyz_y="0.0625" xyz_z="0.0" rpy="${leg_rail_rpy_L}" rail_axis="${leg_rail_axis_L}" p_low="-0.111" p_up="0.0"
+  <!-- Leg 2: Rear Left (lh) via lh_leg_mount -->
+  <xacro:leg prefix="lh" leg_num="2" parent_link="lh_leg_mount" rail_axis="${leg_rail_axis_L}" p_low="-0.111" p_up="0.0"
              thigh_xyz="${leg12_thigh_xyz}" shin_xyz="${leg12_shin_xyz}" slider_inertia_xyz="${l2_inertia_xyz}"
              hip_xyz="0.016 0.0199 0.055"
              foot_tip_xyz="${leg12_foot_tip_xyz}"/>
 
-  <!-- Leg 3: Rear Right (rh) base_link-local anchor -->
-  <xacro:leg prefix="rh" leg_num="3" xyz_x="0.3711" xyz_y="0.1825" xyz_z="0.0" rpy="${leg_rail_rpy_R}" rail_axis="${leg_rail_axis_R}" p_low="0.0" p_up="0.111"
+  <!-- Leg 3: Rear Right (rh) via rh_leg_mount -->
+  <xacro:leg prefix="rh" leg_num="3" parent_link="rh_leg_mount" rail_axis="${leg_rail_axis_R}" p_low="0.0" p_up="0.111"
              thigh_xyz="${leg3_thigh_xyz}" shin_xyz="${leg3_shin_xyz}" slider_inertia_xyz="${l3_inertia_xyz}"
              hip_rpy="${leg_hip_rpy_R}" knee_xyz="${leg_knee_xyz_R}"
              foot_tip_xyz="${leg3_foot_tip_xyz}"/>
 
-  <!-- Leg 4: Front Right (rf) base_link-local anchor -->
-  <xacro:leg prefix="rf" leg_num="4" xyz_x="0.1291" xyz_y="0.1825" xyz_z="0.0" rpy="${leg_rail_rpy_R}" rail_axis="${leg_rail_axis_R}" p_low="-0.111" p_up="0.0"
+  <!-- Leg 4: Front Right (rf) via rf_leg_mount -->
+  <xacro:leg prefix="rf" leg_num="4" parent_link="rf_leg_mount" rail_axis="${leg_rail_axis_R}" p_low="-0.111" p_up="0.0"
              thigh_xyz="${leg4_thigh_xyz}" shin_xyz="${leg4_shin_xyz}" slider_inertia_xyz="${l4_inertia_xyz}"
              hip_rpy="${leg_hip_rpy_R}" hip_xyz="0.0116 0.0199 0.055" knee_xyz="${leg_knee_xyz_R}"
              thigh_rpy="${leg_thigh_mesh_flip_rpy}" thigh_col_rpy="${leg_thigh_mesh_flip_rpy}"

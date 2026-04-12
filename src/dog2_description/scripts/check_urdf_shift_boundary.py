@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 
 """
-Validate URDF shift boundary invariants for dog2.
+Validate current URDF shift / trunk / leg-mount boundary invariants for dog2.
 
 This script enforces the rule that CAD-origin compensation is applied only at
-`base_offset_joint`, while `base_link` and leg-root anchors remain expressed in
-base_link-local coordinates.
+`base_offset_joint`, while:
+  - `base_link` remains the ROS/control root and carries trunk inertial/collision
+  - `base_link_cad` carries the trunk visual shell only
+  - leg installation is expressed via `*_leg_mount_fixed` under `base_link`
 """
 
 from __future__ import annotations
@@ -20,21 +22,56 @@ from pathlib import Path
 
 EPS = 1e-4
 STRICT_EPS = 1e-6
+ZERO_VEC = (0.0, 0.0, 0.0)
 
-EXPECTED_BASE_LINK_VISUAL = (-0.9780, 0.87203, -0.2649)
-EXPECTED_BASE_LINK_INERTIAL = (0.2492, 0.12503, 0.0)
+EXPECTED_BASE_LINK_INERTIAL = (0.000225, 0.00253, 0.0)
+EXPECTED_BASE_LINK_CAD_VISUAL = (-0.9780, 0.87203, -0.2649)
+EXPECTED_BASE_LINK_COLLISION = (-0.00586, -0.000001, -0.006837)
+EXPECTED_BASE_LINK_COLLISION_BOX_SIZE = (0.342, 0.160, 0.100333)
+EXPECTED_BASE_LINK_CAD_FIXED = {
+    "parent": "base_link",
+    "child": "base_link_cad",
+    "xyz": (-0.248975, -0.1225, 0.0),
+    "rpy": ZERO_VEC,
+}
+EXPECTED_LEG_MOUNTS = {
+    "lf_leg_mount_fixed": {
+        "parent": "base_link",
+        "child": "lf_leg_mount",
+        "xyz": (-0.124375, -0.06, 0.0),
+        "rpy": (math.pi / 2.0, 0.0, 0.0),
+    },
+    "lh_leg_mount_fixed": {
+        "parent": "base_link",
+        "child": "lh_leg_mount",
+        "xyz": (0.122125, -0.06, 0.0),
+        "rpy": (math.pi / 2.0, 0.0, 0.0),
+    },
+    "rh_leg_mount_fixed": {
+        "parent": "base_link",
+        "child": "rh_leg_mount",
+        "xyz": (0.122125, 0.06, 0.0),
+        "rpy": (math.pi / 2.0, 0.0, -math.pi),
+    },
+    "rf_leg_mount_fixed": {
+        "parent": "base_link",
+        "child": "rf_leg_mount",
+        "xyz": (-0.119875, 0.06, 0.0),
+        "rpy": (math.pi / 2.0, 0.0, -math.pi),
+    },
+}
 EXPECTED_RAIL_JOINTS = {
-    "lf_rail_joint": (0.1246, 0.0625, 0.0),
-    "lh_rail_joint": (0.3711, 0.0625, 0.0),
-    "rh_rail_joint": (0.3711, 0.1825, 0.0),
-    "rf_rail_joint": (0.1291, 0.1825, 0.0),
+    "lf_rail_joint": "lf_leg_mount",
+    "lh_rail_joint": "lh_leg_mount",
+    "rh_rail_joint": "rh_leg_mount",
+    "rf_rail_joint": "rf_leg_mount",
 }
 
 
-def parse_xyz(xyz: str) -> tuple[float, float, float]:
-    parts = xyz.split()
+def parse_vec(text: str) -> tuple[float, float, float]:
+    parts = text.split()
     if len(parts) != 3:
-        raise ValueError(f"Invalid xyz format: {xyz!r}")
+        raise ValueError(f"Invalid vector format: {text!r}")
     return (float(parts[0]), float(parts[1]), float(parts[2]))
 
 
@@ -51,7 +88,14 @@ def run_xacro_to_urdf(xacro_path: Path) -> Path:
     with tempfile.NamedTemporaryFile(suffix=".urdf", delete=False) as tmp:
         urdf_path = Path(tmp.name)
 
-    cmd = ["xacro", str(xacro_path), "-o", str(urdf_path)]
+    controllers_yaml = xacro_path.parents[1] / "config" / "ros2_controllers.yaml"
+    cmd = [
+        "xacro",
+        str(xacro_path),
+        f"controllers_yaml:={controllers_yaml}",
+        "-o",
+        str(urdf_path),
+    ]
     proc = subprocess.run(cmd, capture_output=True, text=True)
     if proc.returncode != 0:
         fail(
@@ -64,9 +108,7 @@ def run_xacro_to_urdf(xacro_path: Path) -> Path:
 
 
 def get_joint_origin(robot: ET.Element, joint_name: str) -> tuple[float, float, float]:
-    joint = robot.find(f"./joint[@name='{joint_name}']")
-    if joint is None:
-        fail(f"Missing joint: {joint_name}")
+    joint = get_joint(robot, joint_name)
 
     origin = joint.find("origin")
     if origin is None:
@@ -76,34 +118,123 @@ def get_joint_origin(robot: ET.Element, joint_name: str) -> tuple[float, float, 
     if xyz is None:
         fail(f"Joint {joint_name} origin missing xyz")
 
-    return parse_xyz(xyz)
+    return parse_vec(xyz)
+
+def get_joint_rpy(robot: ET.Element, joint_name: str) -> tuple[float, float, float]:
+    joint = get_joint(robot, joint_name)
+    origin = joint.find("origin")
+    if origin is None:
+        fail(f"Joint {joint_name} has no origin")
+    return parse_vec(origin.attrib.get("rpy", "0 0 0"))
 
 
-def get_link_visual_origin(robot: ET.Element, link_name: str) -> tuple[float, float, float]:
+def get_joint_parent(robot: ET.Element, joint_name: str) -> str:
+    joint = get_joint(robot, joint_name)
+    parent = joint.find("parent")
+    if parent is None:
+        fail(f"Joint {joint_name} missing parent")
+    link = parent.attrib.get("link")
+    if not link:
+        fail(f"Joint {joint_name} parent missing link attribute")
+    return link
+
+
+def get_joint_child(robot: ET.Element, joint_name: str) -> str:
+    joint = get_joint(robot, joint_name)
+    child = joint.find("child")
+    if child is None:
+        fail(f"Joint {joint_name} missing child")
+    link = child.attrib.get("link")
+    if not link:
+        fail(f"Joint {joint_name} child missing link attribute")
+    return link
+
+
+def get_joint(robot: ET.Element, joint_name: str) -> ET.Element:
+    joint = robot.find(f"./joint[@name='{joint_name}']")
+    if joint is None:
+        fail(f"Missing joint: {joint_name}")
+    return joint
+
+
+def get_link(robot: ET.Element, link_name: str) -> ET.Element:
     link = robot.find(f"./link[@name='{link_name}']")
     if link is None:
         fail(f"Missing link: {link_name}")
+    return link
 
-    visual = link.find("visual")
-    if visual is None:
-        fail(f"Link {link_name} missing visual")
 
-    origin = visual.find("origin")
+def get_link_sub_origin(robot: ET.Element, link_name: str, tag_name: str) -> tuple[float, float, float]:
+    link = get_link(robot, link_name)
+    sub = link.find(tag_name)
+    if sub is None:
+        fail(f"Link {link_name} missing {tag_name}")
+
+    origin = sub.find("origin")
     if origin is None:
-        fail(f"Link {link_name} visual missing origin")
+        fail(f"Link {link_name} {tag_name} missing origin")
 
     xyz = origin.attrib.get("xyz")
     if xyz is None:
-        fail(f"Link {link_name} visual origin missing xyz")
+        fail(f"Link {link_name} {tag_name} origin missing xyz")
 
-    return parse_xyz(xyz)
+    return parse_vec(xyz)
+
+
+def get_link_sub_geometry(robot: ET.Element, link_name: str, tag_name: str) -> ET.Element:
+    link = get_link(robot, link_name)
+    sub = link.find(tag_name)
+    if sub is None:
+        fail(f"Link {link_name} missing {tag_name}")
+
+    geometry = sub.find("geometry")
+    if geometry is None:
+        fail(f"Link {link_name} {tag_name} missing geometry")
+    return geometry
+
+
+def get_link_sub_box_size(robot: ET.Element, link_name: str, tag_name: str) -> tuple[float, float, float]:
+    geometry = get_link_sub_geometry(robot, link_name, tag_name)
+    box = geometry.find("box")
+    if box is None:
+        fail(f"Link {link_name} {tag_name} geometry is not a box primitive")
+    size = box.attrib.get("size")
+    if size is None:
+        fail(f"Link {link_name} {tag_name} box missing size")
+    return parse_vec(size)
+
+
+def assert_link_has_no_tag(robot: ET.Element, link_name: str, tag_name: str) -> None:
+    link = get_link(robot, link_name)
+    if link.find(tag_name) is not None:
+        fail(f"Link {link_name} should not contain {tag_name} in the current trunk split")
+
+
+def assert_close_vec(name: str, actual: tuple[float, float, float], expected: tuple[float, float, float], tol: float) -> None:
+    if not is_close_vec(actual, expected, tol):
+        fail(f"{name} mismatch: expected={expected}, got={actual}, tol={tol}")
+
+
+def assert_joint_matches(
+    robot: ET.Element,
+    joint_name: str,
+    *,
+    parent: str,
+    child: str,
+    xyz: tuple[float, float, float],
+    rpy: tuple[float, float, float],
+    tol: float,
+) -> None:
+    if get_joint_parent(robot, joint_name) != parent:
+        fail(f"{joint_name} parent mismatch: expected={parent}, got={get_joint_parent(robot, joint_name)}")
+    if get_joint_child(robot, joint_name) != child:
+        fail(f"{joint_name} child mismatch: expected={child}, got={get_joint_child(robot, joint_name)}")
+    assert_close_vec(f"{joint_name} origin xyz", get_joint_origin(robot, joint_name), xyz, tol)
+    assert_close_vec(f"{joint_name} origin rpy", get_joint_rpy(robot, joint_name), rpy, tol)
 
 
 def get_link_inertial_origin(robot: ET.Element, link_name: str) -> tuple[float, float, float]:
-    link = robot.find(f"./link[@name='{link_name}']")
-    if link is None:
-        fail(f"Missing link: {link_name}")
-
+    link = get_link(robot, link_name)
     inertial = link.find("inertial")
     if inertial is None:
         fail(f"Link {link_name} missing inertial")
@@ -116,7 +247,7 @@ def get_link_inertial_origin(robot: ET.Element, link_name: str) -> tuple[float, 
     if xyz is None:
         fail(f"Link {link_name} inertial origin missing xyz")
 
-    return parse_xyz(xyz)
+    return parse_vec(xyz)
 
 
 def main() -> int:
@@ -147,24 +278,31 @@ def main() -> int:
     try:
         root = ET.parse(urdf_path).getroot()
 
-        base_visual = get_link_visual_origin(root, "base_link")
-        if not is_close_vec(base_visual, EXPECTED_BASE_LINK_VISUAL, tol):
-            fail(
-                "base_link visual origin changed unexpectedly. "
-                f"expected={EXPECTED_BASE_LINK_VISUAL}, got={base_visual}, tol={tol}"
-            )
-
         base_inertial = get_link_inertial_origin(root, "base_link")
-        if not is_close_vec(base_inertial, EXPECTED_BASE_LINK_INERTIAL, tol):
-            fail(
-                "base_link inertial origin changed unexpectedly. "
-                f"expected={EXPECTED_BASE_LINK_INERTIAL}, got={base_inertial}, tol={tol}"
-            )
+        assert_close_vec("base_link inertial origin", base_inertial, EXPECTED_BASE_LINK_INERTIAL, tol)
+        assert_link_has_no_tag(root, "base_link", "visual")
+        base_collision = get_link_sub_origin(root, "base_link", "collision")
+        assert_close_vec("base_link collision origin", base_collision, EXPECTED_BASE_LINK_COLLISION, tol)
+        base_collision_box = get_link_sub_box_size(root, "base_link", "collision")
+        assert_close_vec("base_link collision box size", base_collision_box, EXPECTED_BASE_LINK_COLLISION_BOX_SIZE, tol)
 
-        for joint, expected_xyz in EXPECTED_RAIL_JOINTS.items():
-            xyz = get_joint_origin(root, joint)
-            if not is_close_vec(xyz, expected_xyz, tol):
-                fail(f"{joint} origin mismatch: expected={expected_xyz}, got={xyz}, tol={tol}")
+        assert_link_has_no_tag(root, "base_link_cad", "inertial")
+        base_cad_visual = get_link_sub_origin(root, "base_link_cad", "visual")
+        assert_link_has_no_tag(root, "base_link_cad", "collision")
+        assert_close_vec("base_link_cad visual origin", base_cad_visual, EXPECTED_BASE_LINK_CAD_VISUAL, tol)
+        assert_joint_matches(root, "base_link_cad_fixed", tol=tol, **EXPECTED_BASE_LINK_CAD_FIXED)
+
+        for joint_name, expected in EXPECTED_LEG_MOUNTS.items():
+            assert_joint_matches(root, joint_name, tol=tol, **expected)
+
+        for joint_name, expected_parent in EXPECTED_RAIL_JOINTS.items():
+            if get_joint_parent(root, joint_name) != expected_parent:
+                fail(
+                    f"{joint_name} parent mismatch: expected={expected_parent}, "
+                    f"got={get_joint_parent(root, joint_name)}"
+                )
+            assert_close_vec(f"{joint_name} origin xyz", get_joint_origin(root, joint_name), ZERO_VEC, tol)
+            assert_close_vec(f"{joint_name} origin rpy", get_joint_rpy(root, joint_name), ZERO_VEC, tol)
 
         mode = "strict" if args.strict else "normal"
         print(f"[PASS] URDF shift boundary checks passed (mode={mode}, tol={tol:g}).")

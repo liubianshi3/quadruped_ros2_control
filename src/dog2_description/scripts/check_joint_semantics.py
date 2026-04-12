@@ -97,6 +97,16 @@ def get_joint(robot: ET.Element, joint_name: str) -> ET.Element:
     return joint
 
 
+def get_joint_parent(robot: ET.Element, joint_name: str) -> str:
+    parent = get_joint(robot, joint_name).find("parent")
+    if parent is None:
+        fail(f"Joint {joint_name} missing parent")
+    link = parent.attrib.get("link")
+    if not link:
+        fail(f"Joint {joint_name} parent missing link")
+    return link
+
+
 def get_joint_rpy(robot: ET.Element, joint_name: str) -> tuple[float, float, float]:
     origin = get_joint(robot, joint_name).find("origin")
     if origin is None:
@@ -139,7 +149,23 @@ def main() -> int:
         pitch_expected = (0.0, -1.0, 0.0)
 
         for prefix in prefixes:
-            rail_r = rpy_matrix(get_joint_rpy(root, f"{prefix}_rail_joint"))
+            rail_parent = get_joint_parent(root, f"{prefix}_rail_joint")
+            mount_joint = f"{prefix}_leg_mount_fixed"
+            if rail_parent == f"{prefix}_leg_mount":
+                mount_r = rpy_matrix(get_joint_rpy(root, mount_joint))
+            elif rail_parent == "base_link":
+                mount_r = (
+                    (1.0, 0.0, 0.0),
+                    (0.0, 1.0, 0.0),
+                    (0.0, 0.0, 1.0),
+                )
+            else:
+                fail(
+                    f"{prefix}_rail_joint unexpected parent: expected {prefix}_leg_mount "
+                    f"or base_link, got={rail_parent}"
+                )
+
+            rail_r = mat_mul(mount_r, rpy_matrix(get_joint_rpy(root, f"{prefix}_rail_joint")))
             rail_axis_base = mat_vec(rail_r, get_joint_axis(root, f"{prefix}_rail_joint"))
             if not is_close_vec(rail_axis_base, rail_expected):
                 fail(f"{prefix}_rail_joint semantic axis mismatch: expected={rail_expected}, got={rail_axis_base}")
