@@ -82,31 +82,28 @@
   <link name="base_footprint"/>
 
   <!--
-    CAD-origin compensation (global URDF shift)
+    Semantic base placement (current source-of-truth)
     ============================================================
-    WHY:
-      Source CAD/mesh was exported with a large global offset.
-
-    UNIQUE COMPENSATION LAYER (ENFORCED):
-      * urdf_shift is used ONLY in base_offset_joint.
-      * Leg installation frames are expressed in base_link-local coordinates
-        (Stage 2: *_leg_mount_fixed attaches each leg mount to base_link; same
-        xyz/rpy as Stage 1 since base_link_cad_fixed is identity to
-        base_link_cad).
+    Historical urdf_shift_* bookkeeping has been removed. The fixed transform
+    from base_footprint to the semantic base_link is now expressed directly as
+    a normal URDF constant.
 
     STRICT BOUNDARY:
-      * DO NOT apply this shift again in TF publishers, sensor extrinsics,
-        MPC/WBC kinematics, Python config, or controller code.
-      * Any second compensation will cause frame mismatch (double offset).
+      * DO NOT re-introduce urdf_shift_* or a second hidden compensation layer
+        in TF publishers, sensor extrinsics, MPC/WBC kinematics, Python config,
+        or controller code.
+      * base_offset_joint remains non-identity on purpose: it places the
+        semantic base_link relative to base_footprint while preserving the
+        current semantic base definition.
 
     MAINTENANCE RULE:
-      If CAD is re-exported with corrected origin, update urdf_shift and
-      re-baseline base_link-local leg/trunk constants; run
-      scripts/check_urdf_shift_boundary.py and scripts/verify_stage2_rail_geometry.py.
+      If base_footprint/base_link placement is intentionally redefined in the
+      future, update the explicit base_offset_joint constants below and
+      re-baseline the guardrails and stand-geometry golden.
   -->
-  <xacro:property name="urdf_shift_x" value="0.9780"/>
-  <xacro:property name="urdf_shift_y" value="-0.87203"/>
-  <xacro:property name="urdf_shift_z" value="0.2649"/>
+  <xacro:property name="base_offset_x" value="0.2492"/>
+  <xacro:property name="base_offset_y" value="0.12503"/>
+  <xacro:property name="base_offset_z" value="-0.2649"/>
   <!--
     Semantic trunk root definition
     ============================================================
@@ -130,7 +127,7 @@
   <joint name="base_offset_joint" type="fixed">
     <parent link="base_footprint"/>
     <child link="base_link"/>
-    <origin xyz="${1.2272 - urdf_shift_x} ${-0.7470 - urdf_shift_y} ${0.0 - urdf_shift_z}" rpy="0 0 ${PI_CONST}"/>
+    <origin xyz="${base_offset_x} ${base_offset_y} ${base_offset_z}" rpy="0 0 ${PI_CONST}"/>
   </joint>
 
   <!--
@@ -207,8 +204,8 @@
     bullet list above is what controllers, Pinocchio, and
     dog2_motion_control/dog2_motion_control/joint_semantics.py must match.
 
-    **Do not** reintroduce a second global CAD shift beyond `urdf_shift` /
-    `base_offset_joint`; see comment block on `base_footprint` above.
+    **Do not** reintroduce a second global CAD shift beyond
+    `base_offset_joint`; see the semantic base placement comment above.
 
     ========================================================================
   -->

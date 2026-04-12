@@ -27,7 +27,8 @@
   参考：`src/dog2_motion_control/dog2_motion_control/joint_names.py`
 
 ### 2.3 URDF 偏移边界
-- `urdf_shift_*` 只允许在 `base_offset_joint` 使用（一次性补偿）。
+- 历史 `urdf_shift_*` 已从 xacro 源中移除，不再允许恢复成隐式补偿层。
+- `base_offset_joint` 现在显式表达 `base_footprint -> semantic base_link` 的固定放置。
 - `base_link` 与腿根 origin 保持 base_link-local 常量表达。  
   参考：`src/dog2_description/urdf/dog2.urdf.xacro`
 
@@ -78,7 +79,7 @@ ros2 launch dog2_motion_control spider_gazebo_complete.launch.py
   参考：`src/dog2_motion_control/dog2_motion_control/spider_robot_controller.py`
 
 ### 4.4 URDF Shift 双重补偿风险
-- 新增边界脚本校验：xacro 展开后检查 `base_link` 与四个 `*_rail_joint` 的期望原点。
+- 新增边界脚本校验：禁止 `urdf_shift_*` 回流，并检查 `base_offset_joint`、`base_link` 与四个 `*_rail_joint` 的期望几何。
 - 支持 `--tolerance/--tol` 和 `--strict`。  
   参考：`src/dog2_description/scripts/check_urdf_shift_boundary.py`
 

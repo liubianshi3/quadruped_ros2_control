@@ -1,4 +1,4 @@
-Dog2 base frame migration — current state (Stage 4)
+Dog2 base frame migration — current state (Stage 5)
 
 Frame names (no aliases):
   base_footprint  — ground / planning chain top
@@ -18,6 +18,11 @@ Current chain:
   base_footprint -> base_offset_joint -> base_link
     -> base_link_cad_fixed (non-identity shell offset) -> base_link_cad
   base_link -> *_leg_mount_fixed -> *_leg_mount -> *_rail_joint -> rail_link -> …
+
+Current explicit base placement:
+  base_offset_joint xyz = (0.249200, 0.125030, -0.264900)
+  base_offset_joint rpy = (0, 0, pi)
+  Note: the joint name is legacy, but urdf_shift_* bookkeeping has been removed.
 
 Current ownership split:
   base_link
@@ -43,9 +48,8 @@ Current trunk collision primitive on base_link:
   size   = ( 0.342000,  0.160000,  0.100333)
 
 What is intentionally NOT cleaned up yet:
-  - urdf_shift_x / urdf_shift_y / urdf_shift_z
-  - base_offset_joint
   - Gazebo-specific interpretation and spawn tuning
+  - any future decision to rename base_offset_joint for readability
 
 Verification:
   python3 src/dog2_description/scripts/check_urdf_shift_boundary.py src/dog2_description/urdf/dog2.urdf.xacro

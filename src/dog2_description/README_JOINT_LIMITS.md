@@ -48,8 +48,13 @@ This means:
 
 - control / kinematics should reason in the semantic `base_link` frame
 - CAD shell placement should be interpreted through `base_link_cad_fixed`
-- `urdf_shift_*` and `base_offset_joint` are still historical global-compensation
-  layers and have not been cleaned up yet
+- legacy `urdf_shift_*` properties have been removed from the xacro source
+- `base_offset_joint` now explicitly places the semantic `base_link` relative
+  to `base_footprint` with:
+  - `xyz = (0.2492, 0.12503, -0.2649)`
+  - `rpy = (0, 0, pi)`
+- the joint name `base_offset_joint` is retained for compatibility, but it is
+  no longer a hidden CAD-compensation layer
 
 ## Modifying Joint Limits
 
@@ -77,6 +82,8 @@ python3 src/dog2_description/scripts/check_joint_semantics.py src/dog2_descripti
 What these checks verify:
 
 - `check_urdf_shift_boundary.py`
+  - `base_offset_joint` matches the explicit semantic base placement constants
+  - legacy `urdf_shift_*` tokens are absent from the xacro source
   - `base_link` keeps trunk inertial plus the current trunk collision primitive
   - `base_link_cad` keeps the trunk visual shell only
   - `base_link_cad_fixed` matches the current semantic shell offset

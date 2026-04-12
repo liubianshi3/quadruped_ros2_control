@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 
 """
-Validate current URDF shift / trunk / leg-mount boundary invariants for dog2.
+Validate current base-link / trunk / leg-mount boundary invariants for dog2.
 
-This script enforces the rule that CAD-origin compensation is applied only at
-`base_offset_joint`, while:
+This script enforces the rule that:
+  - `base_offset_joint` explicitly places the semantic `base_link`
+  - legacy `urdf_shift_*` bookkeeping is not present in the xacro source
   - `base_link` remains the ROS/control root and carries trunk inertial/collision
   - `base_link_cad` carries the trunk visual shell only
   - leg installation is expressed via `*_leg_mount_fixed` under `base_link`
@@ -14,6 +15,7 @@ from __future__ import annotations
 
 import argparse
 import math
+import re
 import subprocess
 import sys
 import tempfile
@@ -28,6 +30,12 @@ EXPECTED_BASE_LINK_INERTIAL = (0.000225, 0.00253, 0.0)
 EXPECTED_BASE_LINK_CAD_VISUAL = (-0.9780, 0.87203, -0.2649)
 EXPECTED_BASE_LINK_COLLISION = (-0.00586, -0.000001, -0.006837)
 EXPECTED_BASE_LINK_COLLISION_BOX_SIZE = (0.342, 0.160, 0.100333)
+EXPECTED_BASE_OFFSET_JOINT = {
+    "parent": "base_footprint",
+    "child": "base_link",
+    "xyz": (0.2492, 0.12503, -0.2649),
+    "rpy": (0.0, 0.0, math.pi),
+}
 EXPECTED_BASE_LINK_CAD_FIXED = {
     "parent": "base_link",
     "child": "base_link_cad",
@@ -105,6 +113,12 @@ def run_xacro_to_urdf(xacro_path: Path) -> Path:
             f"stderr:\n{proc.stderr}"
         )
     return urdf_path
+
+
+def assert_no_legacy_shift_tokens(xacro_path: Path) -> None:
+    source = xacro_path.read_text(encoding="utf-8")
+    if re.search(r'name="urdf_shift_[^"]+"', source) or "${urdf_shift_" in source:
+        fail("Legacy urdf_shift_* properties/expressions are still present in the xacro source")
 
 
 def get_joint_origin(robot: ET.Element, joint_name: str) -> tuple[float, float, float]:
@@ -276,7 +290,10 @@ def main() -> int:
     urdf_path = run_xacro_to_urdf(xacro_path)
 
     try:
+        assert_no_legacy_shift_tokens(xacro_path)
         root = ET.parse(urdf_path).getroot()
+
+        assert_joint_matches(root, "base_offset_joint", tol=tol, **EXPECTED_BASE_OFFSET_JOINT)
 
         base_inertial = get_link_inertial_origin(root, "base_link")
         assert_close_vec("base_link inertial origin", base_inertial, EXPECTED_BASE_LINK_INERTIAL, tol)
