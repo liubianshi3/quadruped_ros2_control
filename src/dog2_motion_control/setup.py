@@ -28,6 +28,7 @@ CONSOLE_SCRIPTS = [
     "gz_pose_to_odom = dog2_motion_control.gz_pose_to_odom:main",
     "obstacle_analysis = dog2_motion_control.obstacle_analysis:main",
     "gz_gain_setter = dog2_motion_control.gz_gain_setter:main",
+    "gz_startup_gate = dog2_motion_control.gz_startup_gate:main",
 ]
 
 INSTALL_REQUIRES = [

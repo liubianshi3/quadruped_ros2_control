@@ -28,7 +28,8 @@
 
 ### 2.3 URDF 偏移边界
 - 历史 `urdf_shift_*` 已从 xacro 源中移除，不再允许恢复成隐式补偿层。
-- `base_offset_joint` 现在显式表达 `base_footprint -> semantic base_link` 的固定放置。
+- `base_link` 现在是 URDF 唯一主根；`base_footprint` 与 `base_offset_joint` 已从 URDF 删除。
+- 真正的 `base_footprint` 若未来仍需要，应由运行时 TF 单独发布。
 - `base_link` 与腿根 origin 保持 base_link-local 常量表达。  
   参考：`src/dog2_description/urdf/dog2.urdf.xacro`
 
@@ -79,7 +80,7 @@ ros2 launch dog2_motion_control spider_gazebo_complete.launch.py
   参考：`src/dog2_motion_control/dog2_motion_control/spider_robot_controller.py`
 
 ### 4.4 URDF Shift 双重补偿风险
-- 新增边界脚本校验：禁止 `urdf_shift_*` 回流，并检查 `base_offset_joint`、`base_link` 与四个 `*_rail_joint` 的期望几何。
+- 新增边界脚本校验：禁止 `urdf_shift_*` 回流，并检查 `base_link` 为唯一 URDF 根、legacy `base_footprint/base_offset_joint` 不得回流，以及四个 `*_rail_joint` 的期望几何。
 - 支持 `--tolerance/--tol` 和 `--strict`。  
   参考：`src/dog2_description/scripts/check_urdf_shift_boundary.py`
 
@@ -96,7 +97,8 @@ ros2 launch dog2_motion_control spider_gazebo_complete.launch.py
   - `src/dog2_motion_control/config/gait_params.yaml`
   - `src/dog2_motion_control/config/gait_params_ros.yaml`
 
-> 注：部分配置项仍保留 `haa/hfe/kfe` 历史字段命名（配置层），而运行时代码已迁移到 `coxa/femur/tibia` 语义。后续建议彻底收口，避免认知混淆。
+> 注：旋转关节限位现已以 `dog2.urdf.xacro` 为唯一真值源；配置文件中的 `joint_limits`
+> 段仅保留 rail 兼容项，不再承载 `haa/hfe/kfe` 的运行时限位真值。
 
 ### 5.2 描述包测试开关
 - `DOG2_ENABLE_URDF_SHIFT_BOUNDARY_CHECK` 默认 `ON`。

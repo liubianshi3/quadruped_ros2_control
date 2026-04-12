@@ -6,7 +6,7 @@ as a topic but does not carry data in a specific Gazebo setup.
 
 Pipeline:
 1. `/world/.../dynamic_pose/info` is bridged to ROS `tf2_msgs/TFMessage`.
-2. This node extracts dog2 base pose from TF-like transforms.
+2. This node extracts the configured dog2 base pose from TF-like transforms.
 3. Linear / angular velocity are estimated from finite differences.
 4. Publish synthesized `nav_msgs/Odometry` on `/odom`.
 """
@@ -102,6 +102,7 @@ class GzPoseToOdom(Node):
         self._model_name = str(self.get_parameter("model_name").value)
         self._odom_frame = str(self.get_parameter("odom_frame").value)
         self._base_frame = str(self.get_parameter("base_frame").value)
+        self._base_frame_lower = self._base_frame.lower()
         self._publish_only_when_no_external_odom = bool(
             self.get_parameter("publish_only_when_no_external_odom").value
         )
@@ -137,25 +138,29 @@ class GzPoseToOdom(Node):
         self._last_debug_sec = 0.0
 
         self.get_logger().info(
-            f"gz_pose_to_odom ready: pose_topic='{self._pose_topic}', odom_topic='{self._odom_topic}', model='{self._model_name}'"
+            f"gz_pose_to_odom ready: pose_topic='{self._pose_topic}', odom_topic='{self._odom_topic}', "
+            f"model='{self._model_name}', base_frame='{self._base_frame}'"
         )
+
+    @staticmethod
+    def _ends_with_frame(child: str, frame: str) -> bool:
+        return child.endswith(f"/{frame}") or child.endswith(f"::{frame}")
 
     def _transform_priority(self, child: str) -> int:
         child_l = child.lower()
         model_l = self._model_name.lower()
+        base_l = self._base_frame_lower
 
-        if model_l in child_l and "base_link" in child_l:
+        if model_l in child_l and base_l in child_l:
             return 0
-        if child_l == "base_link":
+        if child_l == base_l:
             return 1
-        if child_l == model_l:
+        if self._ends_with_frame(child_l, base_l):
             return 2
-        if model_l in child_l and "base_footprint" in child_l:
+        if child_l == model_l:
             return 3
-        if child_l == "base_footprint":
-            return 4
         if model_l in child_l:
-            return 5
+            return 4
         return 100
 
     def _select_transform(self, transforms: Sequence[TransformStamped]) -> Optional[TransformStamped]:

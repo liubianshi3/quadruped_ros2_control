@@ -8,11 +8,14 @@
 import time
 import math
 import rclpy
+from rclpy.clock import Clock, ClockType
 from rclpy.node import Node
+from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from geometry_msgs.msg import Twist
 from std_msgs.msg import String, Bool
 import json
 from enum import Enum
+from typing import Dict, Optional
 
 from rcl_interfaces.msg import SetParametersResult
 
@@ -22,6 +25,7 @@ from .trajectory_planner import TrajectoryPlanner
 from .joint_controller import JointController
 from .joint_names import PREFIX_TO_LEG_MAP, get_leg_joint_names
 from .config_loader import ConfigLoader
+from .leg_parameters import reload_leg_parameter_joint_limits_from_urdf
 
 
 class LocomotionMode(Enum):
@@ -44,7 +48,7 @@ class SpiderRobotController(Node):
 
         self.ik_solver = create_kinematics_solver()
         self.ik_solver.configure_regularization(self.config_loader.get_ik_regularization())
-        self._apply_config_joint_limits_to_ik()
+        self._reload_joint_limits_from_urdf(force_reload=False)
 
         control_params = self.config_loader.get_control_params()
         self.control_period_sec = float(
@@ -106,6 +110,7 @@ class SpiderRobotController(Node):
         self.ramp_duration_sec = float(self.declare_parameter("standup_ramp_duration_sec", 2.0).value)
         self.standing_joint_angles = {}
         self.ramp_last_valid_commands = {}
+        self._standup_start_joints: Optional[Dict[str, float]] = None
 
         self.is_emergency_mode = False
         self.emergency_start_time = 0.0
@@ -130,6 +135,25 @@ class SpiderRobotController(Node):
         self.debug_mode = False
         self.debug_publisher = self.create_publisher(String, "/spider_debug_info", 10)
         self.debug_publish_counter = 0
+        self._startup_ready_topic = str(
+            self.declare_parameter("startup_ready_topic", "/spider_startup_ready").value
+        )
+        self._gazebo_unpause_prepare_topic = str(
+            self.declare_parameter("gazebo_unpause_prepare_topic", "/gazebo_unpause_prepare").value
+        )
+        self._gazebo_unpaused_topic = str(
+            self.declare_parameter("gazebo_unpaused_topic", "/gazebo_unpaused").value
+        )
+        startup_ready_qos = QoSProfile(depth=1)
+        startup_ready_qos.reliability = ReliabilityPolicy.RELIABLE
+        startup_ready_qos.durability = DurabilityPolicy.TRANSIENT_LOCAL
+        self._startup_ready_pub = self.create_publisher(Bool, self._startup_ready_topic, startup_ready_qos)
+        self._startup_ready_published = False
+        self._startup_sync_performed = False
+        self._gazebo_unpause_prepare_seen = False
+        self._gazebo_unpaused = False
+        self._joint_state_seq_at_unpause = -1
+        self._rail_slip_monitoring_started = False
 
         self.cmd_vel_sub = self.create_subscription(
             Twist, "/cmd_vel", self._cmd_vel_callback, 10
@@ -139,6 +163,12 @@ class SpiderRobotController(Node):
         )
         self.rail_mode_sub = self.create_subscription(
             Bool, "/spider_rail_mode", self._on_rail_mode_msg, 10
+        )
+        self._gazebo_unpause_prepare_sub = self.create_subscription(
+            Bool, self._gazebo_unpause_prepare_topic, self._on_gazebo_unpause_prepare, startup_ready_qos
+        )
+        self._gazebo_unpaused_sub = self.create_subscription(
+            Bool, self._gazebo_unpaused_topic, self._on_gazebo_unpaused, startup_ready_qos
         )
 
         self.timer_period = float(self.declare_parameter("timer_period_sec", self.control_period_sec).value)
@@ -200,19 +230,53 @@ class SpiderRobotController(Node):
         except Exception:
             self.rail_activation_mode = False
 
+    def _on_gazebo_unpause_prepare(self, msg: Bool):
+        if not bool(getattr(msg, "data", False)):
+            return
+        if self._gazebo_unpause_prepare_seen:
+            return
+        self._gazebo_unpause_prepare_seen = True
+        self.joint_controller.log_rail_debug_snapshot("before_unpause")
+
+    def _on_gazebo_unpaused(self, msg: Bool):
+        if not bool(getattr(msg, "data", False)):
+            return
+        if self._gazebo_unpaused:
+            return
+        self._gazebo_unpaused = True
+        self._joint_state_seq_at_unpause = self.joint_controller.get_joint_state_seq()
+        self.joint_controller.disable_rail_slip_monitoring(
+            freeze_expected_targets=True,
+            reset_counters=True,
+        )
+        self.get_logger().info(
+            "Gazebo unpause acknowledged; waiting for the first fresh joint_states frame before enabling rail slip monitoring."
+        )
+
     def start(self):
-        self.get_logger().info("Starting 50Hz control loop...")
+        self.get_logger().info("Starting 50Hz control loop on system clock (startup-safe while Gazebo is paused)...")
         self.is_running = True
         self.is_stopping = False
         self.last_time = time.time()
+        self.joint_controller.disable_rail_slip_monitoring(
+            freeze_expected_targets=False,
+            reset_counters=True,
+        )
 
         self._compute_standing_joint_angles()
 
         self.is_ramping = True
         self.ramp_start_time = time.time()
         self.ramp_last_valid_commands = {}
+        self._standup_start_joints = None
 
-        self.timer = self.create_timer(self.timer_period, self._timer_callback)
+        # Use a wall-clock timer so startup prearm can complete even when Gazebo
+        # launches paused and /clock has not begun advancing yet.
+        self.timer = self.create_timer(
+            self.timer_period,
+            self._timer_callback,
+            clock=Clock(clock_type=ClockType.SYSTEM_TIME),
+        )
 
     def _compute_standing_joint_angles(self):
         self.standing_joint_angles = {}
@@ -228,23 +292,68 @@ class SpiderRobotController(Node):
         )
 
     def _execute_standup_trajectory(self):
-        elapsed = time.time() - self.ramp_start_time
-        t = min(elapsed / max(self.ramp_duration_sec, 1e-6), 1.0)
-        phi = self.trajectory_planner.smooth_phase(t)
-
         if not self.standing_joint_angles:
             self.get_logger().warn("Ramp: standing_joint_angles empty. Holding last valid commands.")
             if self.ramp_last_valid_commands:
                 self.joint_controller.send_joint_commands(self.ramp_last_valid_commands)
             return
 
-        commands = {jn: phi * angle for jn, angle in self.standing_joint_angles.items()}
+        if self._standup_start_joints is None:
+            if not self.joint_controller.has_received_joint_states():
+                return
+            self._standup_start_joints = {}
+            for jn, tgt in self.standing_joint_angles.items():
+                st = self.joint_controller.current_joint_states.get(jn)
+                if st is not None:
+                    self._standup_start_joints[jn] = float(st["position"])
+                else:
+                    self._standup_start_joints[jn] = float(tgt)
+            self.ramp_start_time = time.time()
+            self.get_logger().info(
+                "Standup baseline captured from joint_states (revolute: spawn->standing; rails: hold at snapshot)."
+            )
+
+        elapsed = time.time() - self.ramp_start_time
+        t = min(elapsed / max(self.ramp_duration_sec, 1e-6), 1.0)
+        phi = self.trajectory_planner.smooth_phase(t)
+
+        assert self._standup_start_joints is not None
+        # 起立阶段不要强行把 prismatic 插值到 YAML 的 rail_m=0：仿真里重力平衡轨位常非零，
+        # 与 3R 同时猛拉易导致整机「出生即塌」。导轨保持初始测量；CRUISE 步态仍跟测量轨。
+        commands = {}
+        for jn in self.standing_joint_angles:
+            tgt = float(self.standing_joint_angles[jn])
+            start = float(self._standup_start_joints[jn])
+            if jn.endswith("_rail_joint"):
+                commands[jn] = start
+            else:
+                commands[jn] = start + phi * (tgt - start)
         self.ramp_last_valid_commands = commands.copy()
         self.joint_controller.send_joint_commands(commands)
 
         if t >= 1.0:
             self.is_ramping = False
+            self.joint_controller.sync_rail_targets_from_joint_states()
+            self._startup_sync_performed = True
+            self.joint_controller.disable_rail_slip_monitoring(
+                freeze_expected_targets=True,
+                reset_counters=True,
+            )
+            self.joint_controller.log_rail_debug_snapshot("ready_before_publish")
+            self._publish_startup_ready_once()
             self.get_logger().info("Standup trajectory complete. Entering normal gait loop.")
+
+    def _publish_startup_ready_once(self) -> None:
+        if self._startup_ready_published:
+            return
+
+        msg = Bool()
+        msg.data = True
+        self._startup_ready_pub.publish(msg)
+        self._startup_ready_published = True
+        self.get_logger().info(
+            f"Startup ready signal published on {self._startup_ready_topic}."
+        )
 
     def initiate_smooth_stop(self):
         self.get_logger().info("Initiating smooth stop...")
@@ -306,6 +415,32 @@ class SpiderRobotController(Node):
         self.last_time = now
         self.update(dt)
 
+    def _maybe_enable_rail_slip_monitoring_after_unpause(self) -> None:
+        if self._rail_slip_monitoring_started:
+            return
+        if self.is_ramping:
+            return
+        if not self._startup_sync_performed:
+            return
+        if not self._startup_ready_published:
+            return
+        if not self.joint_controller.has_received_joint_states():
+            return
+        if not self._gazebo_unpaused:
+            return
+
+        current_seq = self.joint_controller.get_joint_state_seq()
+        if current_seq <= self._joint_state_seq_at_unpause:
+            return
+
+        self.joint_controller.log_rail_debug_snapshot("after_unpause_first_joint_state")
+        self.joint_controller.sync_rail_targets_from_joint_states()
+        self.joint_controller.enable_rail_slip_monitoring(reset_counters=True)
+        self._rail_slip_monitoring_started = True
+        self.get_logger().info(
+            "Rail slip monitoring enabled after sync_rail_targets_from_joint_states -> unpause -> first fresh joint_states."
+        )
+
     def update(self, dt):
         try:
             dt_eff = float(dt)
@@ -326,6 +461,12 @@ class SpiderRobotController(Node):
         except Exception:
             self.current_rail_alpha = max(0.0, min(1.0, float(getattr(self, "current_rail_alpha", 0.0) or 0.0)))
 
+        if self.is_ramping:
+            self._execute_standup_trajectory()
+            return
+
+        self._maybe_enable_rail_slip_monitoring_after_unpause()
+
         if not self.joint_controller.check_connection():
             self.get_logger().warn("Joint controller connection lost. Attempting reconnect...")
             if not self.joint_controller.attempt_reconnect():
@@ -336,10 +477,6 @@ class SpiderRobotController(Node):
         if self.is_emergency_mode:
             if self._execute_emergency_descent():
                 self.stop()
-            return
-
-        if self.is_ramping:
-            self._execute_standup_trajectory()
             return
 
         self._check_and_apply_config_update()
@@ -383,10 +520,19 @@ class SpiderRobotController(Node):
             rail_min, rail_max = leg_params.joint_limits['rail']
             rail_mid = 0.5 * (rail_min + rail_max)
             rail_half_span = 0.5 * (rail_max - rail_min)
-            # 临时策略：在 CRUISE_3DOF（导轨未激活）时，把导轨锁到 0.0m，
-            # 便于先验证“导轨锁定”情况下系统是否能稳定运行。
-            if self.mode == LocomotionMode.CRUISE_3DOF and float(self.current_rail_alpha) <= self.rail_lock_alpha_epsilon:
-                rail_hint = self.rail_locked_position_m
+            cruise_rail_locked = self.mode == LocomotionMode.CRUISE_3DOF and float(
+                self.current_rail_alpha
+            ) <= self.rail_lock_alpha_epsilon
+            # CRUISE 锁轨：用当前测量的 prismatic 作为固定 rail 解 3R，并下发同一 rail。
+            # 若强行 rail_hint=0 而仿真在重力下停在非零位，会出现数十毫米“假滑移”急停。
+            if cruise_rail_locked:
+                jn_pre = get_leg_joint_names(PREFIX_TO_LEG_MAP[leg_id])
+                rail_joint = jn_pre["rail"]
+                st = self.joint_controller.current_joint_states.get(rail_joint)
+                if st is not None:
+                    rail_hint = float(max(rail_min, min(rail_max, st["position"])))
+                else:
+                    rail_hint = float(self.rail_locked_position_m)
             else:
                 rail_hint = rail_mid + (phase_scalar * rail_half_span) * self.current_rail_alpha
 
@@ -401,7 +547,8 @@ class SpiderRobotController(Node):
                     s_m, haa, hfe, kfe = 0.0, 0.0, 0.0, 0.0
             else:
                 s_m, haa, hfe, kfe = ik_result
-                s_m = self._apply_rail_velocity_limit(leg_id, s_m, dt)
+                if not cruise_rail_locked:
+                    s_m = self._apply_rail_velocity_limit(leg_id, s_m, dt)
                 self.last_valid_joint_positions[leg_id] = (s_m, haa, hfe, kfe)
                 self.ik_failure_count[leg_id] = 0
 
@@ -499,9 +646,9 @@ class SpiderRobotController(Node):
         if config_path is not None:
             self.config_loader = ConfigLoader(config_path)
         self.config_loader.load()
-        self._apply_config_joint_limits_to_ik()
+        self._reload_joint_limits_from_urdf(force_reload=True)
 
-        # 关节限位的权威来源仍然是 leg_parameters/LEG_PARAMETERS；
+        # 关节限位的权威来源现在是 dog2 xacro/URDF；
         # 这里在配置重载后刷新 JointController 内部的 clamp 表，避免后续扩展时出现脱节。
         try:
             if hasattr(self.joint_controller, "reload_joint_limits"):
@@ -516,30 +663,22 @@ class SpiderRobotController(Node):
         self.update_gait_config(self.config_loader.get_gait_config())
         self.get_logger().info(f"Config reloaded from {self.config_loader.config_path}")
 
-    def _apply_config_joint_limits_to_ik(self):
-        """将YAML中的旋转关节限位同步到IK参数，避免与LegParameters硬编码割裂。
+    def _reload_joint_limits_from_urdf(self, *, force_reload: bool) -> None:
+        """Sync shared IK/controller joint limits from the authoritative xacro source."""
 
-        rail（导轨）方向性与 per-leg 限位仍以 leg_parameters 中的配置为准，
-        不在此处用单一 YAML 段统一覆盖，避免破坏前后腿/左右腿不同 rail 方向语义。
-        """
-        joint_limits = self.config_loader.get_joint_limits()
-        haa_cfg = joint_limits.get("haa", {})
-        hfe_cfg = joint_limits.get("hfe", {})
-        kfe_cfg = joint_limits.get("kfe", {})
-
-        coxa_limits = (float(haa_cfg["min"]), float(haa_cfg["max"]))
-        femur_limits = (float(hfe_cfg["min"]), float(hfe_cfg["max"]))
-        tibia_limits = (float(kfe_cfg["min"]), float(kfe_cfg["max"]))
-
-        for leg_id, params in self.ik_solver.leg_params.items():
-            params.joint_limits["coxa"] = coxa_limits
-            params.joint_limits["femur"] = femur_limits
-            params.joint_limits["tibia"] = tibia_limits
-            self.get_logger().info(
-                f"Applied IK limits for {leg_id}: "
-                f"coxa={coxa_limits}, femur={femur_limits}, tibia={tibia_limits} "
-                f"(rail limits remain per-leg from leg_parameters)"
-            )
+        source_path = reload_leg_parameter_joint_limits_from_urdf(force_reload=force_reload)
+        sample_leg = self.ik_solver.leg_params["lf"]
+        self.get_logger().info(
+            "Loaded joint limits from URDF: "
+            f"source='{source_path}', "
+            f"coxa={sample_leg.joint_limits['coxa']}, "
+            f"femur={sample_leg.joint_limits['femur']}, "
+            f"tibia={sample_leg.joint_limits['tibia']}, "
+            f"rail_by_leg={{lf:{self.ik_solver.leg_params['lf'].joint_limits['rail']}, "
+            f"lh:{self.ik_solver.leg_params['lh'].joint_limits['rail']}, "
+            f"rh:{self.ik_solver.leg_params['rh'].joint_limits['rail']}, "
+            f"rf:{self.ik_solver.leg_params['rf'].joint_limits['rail']}}}"
+        )
 
     def _check_and_apply_config_update(self):
         if self.pending_config_update is None or self.is_stopping:

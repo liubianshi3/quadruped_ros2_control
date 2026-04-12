@@ -115,7 +115,8 @@ def test_check_joint_limits_within_range(test_node):
     
     # 测试旋转关节（弧度）
     joint_name = 'lf_coxa_joint'
-    position = 1.0  # 在限位范围内
+    lower_limit, upper_limit = controller.joint_limits[joint_name]
+    position = 0.5 * (lower_limit + upper_limit)  # 在当前URDF限位范围内
     result = controller.check_joint_limits(joint_name, position)
     assert result == position
 

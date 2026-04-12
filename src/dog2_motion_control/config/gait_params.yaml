@@ -27,39 +27,32 @@ spider_robot_controller:
         rail_m: 0.0
         hip_roll_rad: 0.0
         hip_pitch_rad: -0.3
-        knee_pitch_rad: 0.6
+        knee_pitch_rad: -0.6
       lh:
         rail_m: 0.0
         hip_roll_rad: 0.0
         hip_pitch_rad: -0.3
-        knee_pitch_rad: 0.6
+        knee_pitch_rad: -0.6
       rh:
         rail_m: 0.0
         hip_roll_rad: 0.0
         hip_pitch_rad: -0.3
-        knee_pitch_rad: 0.6
+        knee_pitch_rad: -0.6
       rf:
         rail_m: 0.0
         hip_roll_rad: 0.0
         hip_pitch_rad: -0.3
-        knee_pitch_rad: 0.6
+        knee_pitch_rad: -0.6
     
     joint_limits:
+      # Rotational limits now come from dog2.urdf.xacro.
+      # Keep only rail-related compatibility knobs here.
       rail:
         min: -0.05
         max: 0.05
         locked_position: 0.0
         # Deprecated: rail slip monitoring is handled in JointController via parameters.
         slip_threshold: 0.0005
-      haa:
-        min: -0.785
-        max: 0.785
-      hfe:
-        min: -1.57
-        max: 1.57
-      kfe:
-        min: -2.356
-        max: 0.0
     
     control:
       frequency: 50.0

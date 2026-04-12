@@ -4,10 +4,9 @@
 Validate current base-link / trunk / leg-mount boundary invariants for dog2.
 
 This script enforces the rule that:
-  - `base_offset_joint` explicitly places the semantic `base_link`
   - legacy `urdf_shift_*` bookkeeping is not present in the xacro source
-  - `base_link` remains the ROS/control root and carries trunk inertial/collision
-  - `base_link_cad` carries the trunk visual shell only
+  - `base_link` is the only URDF root and carries trunk inertial/collision/visual
+  - legacy `base_footprint` / `base_offset_joint` / `base_link_cad` frames are absent
   - leg installation is expressed via `*_leg_mount_fixed` under `base_link`
 """
 
@@ -27,21 +26,11 @@ STRICT_EPS = 1e-6
 ZERO_VEC = (0.0, 0.0, 0.0)
 
 EXPECTED_BASE_LINK_INERTIAL = (0.000225, 0.00253, 0.0)
-EXPECTED_BASE_LINK_CAD_VISUAL = (-0.9780, 0.87203, -0.2649)
+EXPECTED_BASE_LINK_VISUAL = (-1.226975, 0.74953, -0.2649)
 EXPECTED_BASE_LINK_COLLISION = (-0.00586, -0.000001, -0.006837)
 EXPECTED_BASE_LINK_COLLISION_BOX_SIZE = (0.342, 0.160, 0.100333)
-EXPECTED_BASE_OFFSET_JOINT = {
-    "parent": "base_footprint",
-    "child": "base_link",
-    "xyz": (0.2492, 0.12503, -0.2649),
-    "rpy": (0.0, 0.0, math.pi),
-}
-EXPECTED_BASE_LINK_CAD_FIXED = {
-    "parent": "base_link",
-    "child": "base_link_cad",
-    "xyz": (-0.248975, -0.1225, 0.0),
-    "rpy": ZERO_VEC,
-}
+FORBIDDEN_LINKS = ("base_footprint", "base_link_cad")
+FORBIDDEN_JOINTS = ("base_offset_joint", "base_link_cad_fixed")
 EXPECTED_LEG_MOUNTS = {
     "lf_leg_mount_fixed": {
         "parent": "base_link",
@@ -171,11 +160,41 @@ def get_joint(robot: ET.Element, joint_name: str) -> ET.Element:
     return joint
 
 
+def assert_joint_absent(robot: ET.Element, joint_name: str) -> None:
+    if robot.find(f"./joint[@name='{joint_name}']") is not None:
+        fail(f"Unexpected legacy joint still present: {joint_name}")
+
+
 def get_link(robot: ET.Element, link_name: str) -> ET.Element:
     link = robot.find(f"./link[@name='{link_name}']")
     if link is None:
         fail(f"Missing link: {link_name}")
     return link
+
+
+def assert_link_absent(robot: ET.Element, link_name: str) -> None:
+    if robot.find(f"./link[@name='{link_name}']") is not None:
+        fail(f"Unexpected legacy link still present: {link_name}")
+
+
+def get_root_links(robot: ET.Element) -> list[str]:
+    link_names = {
+        link.attrib.get("name")
+        for link in robot.findall("./link")
+        if link.attrib.get("name")
+    }
+    child_links = {
+        child.attrib.get("link")
+        for child in (joint.find("child") for joint in robot.findall("./joint"))
+        if child is not None and child.attrib.get("link")
+    }
+    return sorted(link_names - child_links)
+
+
+def assert_unique_root_link(robot: ET.Element, expected_root: str) -> None:
+    roots = get_root_links(robot)
+    if roots != [expected_root]:
+        fail(f"URDF root mismatch: expected only {expected_root!r}, got {roots}")
 
 
 def get_link_sub_origin(robot: ET.Element, link_name: str, tag_name: str) -> tuple[float, float, float]:
@@ -293,21 +312,20 @@ def main() -> int:
         assert_no_legacy_shift_tokens(xacro_path)
         root = ET.parse(urdf_path).getroot()
 
-        assert_joint_matches(root, "base_offset_joint", tol=tol, **EXPECTED_BASE_OFFSET_JOINT)
+        assert_unique_root_link(root, "base_link")
+        for link_name in FORBIDDEN_LINKS:
+            assert_link_absent(root, link_name)
+        for joint_name in FORBIDDEN_JOINTS:
+            assert_joint_absent(root, joint_name)
 
         base_inertial = get_link_inertial_origin(root, "base_link")
         assert_close_vec("base_link inertial origin", base_inertial, EXPECTED_BASE_LINK_INERTIAL, tol)
-        assert_link_has_no_tag(root, "base_link", "visual")
+        base_visual = get_link_sub_origin(root, "base_link", "visual")
+        assert_close_vec("base_link visual origin", base_visual, EXPECTED_BASE_LINK_VISUAL, tol)
         base_collision = get_link_sub_origin(root, "base_link", "collision")
         assert_close_vec("base_link collision origin", base_collision, EXPECTED_BASE_LINK_COLLISION, tol)
         base_collision_box = get_link_sub_box_size(root, "base_link", "collision")
         assert_close_vec("base_link collision box size", base_collision_box, EXPECTED_BASE_LINK_COLLISION_BOX_SIZE, tol)
-
-        assert_link_has_no_tag(root, "base_link_cad", "inertial")
-        base_cad_visual = get_link_sub_origin(root, "base_link_cad", "visual")
-        assert_link_has_no_tag(root, "base_link_cad", "collision")
-        assert_close_vec("base_link_cad visual origin", base_cad_visual, EXPECTED_BASE_LINK_CAD_VISUAL, tol)
-        assert_joint_matches(root, "base_link_cad_fixed", tol=tol, **EXPECTED_BASE_LINK_CAD_FIXED)
 
         for joint_name, expected in EXPECTED_LEG_MOUNTS.items():
             assert_joint_matches(root, joint_name, tol=tol, **expected)

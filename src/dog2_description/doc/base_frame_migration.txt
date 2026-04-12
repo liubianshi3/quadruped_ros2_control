@@ -1,13 +1,15 @@
-Dog2 base frame migration — current state (Stage 5)
+Dog2 base frame migration — current state
 
-Frame names (no aliases):
-  base_footprint  — ground / planning chain top
+URDF frame names (no aliases):
   base_link       — semantic trunk root for ROS/control/Pinocchio; X forward, Y left, Z up
-  base_link_cad   — CAD visual shell only
+
+Optional runtime TF:
+  base_footprint  — ground / planning chain top, only if published at runtime
 
 Current semantic definition:
   base_link is intentionally redefined near the centroid of the four leg mounts.
-  It is not required to coincide with the CAD shell origin.
+  It is not required to coincide with the CAD shell origin, and it is now the
+  only URDF root.
 
   semantic base_link origin in the historical trunk-local coordinates:
     x = 0.248975
@@ -15,27 +17,28 @@ Current semantic definition:
     z = 0.0
 
 Current chain:
-  base_footprint -> base_offset_joint -> base_link
-    -> base_link_cad_fixed (non-identity shell offset) -> base_link_cad
   base_link -> *_leg_mount_fixed -> *_leg_mount -> *_rail_joint -> rail_link -> …
 
-Current explicit base placement:
-  base_offset_joint xyz = (0.249200, 0.125030, -0.264900)
-  base_offset_joint rpy = (0, 0, pi)
-  Note: the joint name is legacy, but urdf_shift_* bookkeeping has been removed.
+Removed from the URDF:
+  base_footprint
+  base_offset_joint
+  base_link_cad
+  base_link_cad_fixed
+
+Runtime note:
+  If a true planning or ground-projection `base_footprint` is needed later,
+  publish it as a runtime TF derived from `base_link`.
 
 Current ownership split:
   base_link
     - trunk inertial
     - trunk collision primitive
+    - trunk visual mesh
     - all four leg mounts
 
-  base_link_cad
-    - trunk visual shell only
-
-Current fixed shell offset:
-  base_link_cad_fixed xyz = (-0.248975, -0.122500, 0.0)
-  base_link_cad_fixed rpy = (0, 0, 0)
+Current trunk visual origin on base_link:
+  visual xyz = (-1.226975, 0.749530, -0.264900)
+  visual rpy = (0, 0, 0)
 
 Current leg-mount anchors in semantic base_link:
   lf_leg_mount_fixed = (-0.124375, -0.060000, 0.0)
@@ -49,7 +52,6 @@ Current trunk collision primitive on base_link:
 
 What is intentionally NOT cleaned up yet:
   - Gazebo-specific interpretation and spawn tuning
-  - any future decision to rename base_offset_joint for readability
 
 Verification:
   python3 src/dog2_description/scripts/check_urdf_shift_boundary.py src/dog2_description/urdf/dog2.urdf.xacro

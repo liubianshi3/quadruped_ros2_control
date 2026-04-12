@@ -1,28 +1,33 @@
 <?xml version="1.0"?>
 <!--
   Dog2 Robot Description (Xacro Source)
-  
-  Recreated from correct URDF file
-  Date: 2026-01-27
-  
-  INERTIA CORRECTIONS:
-  - Leg 1 & 2: Positive X (front legs)
-  - Leg 3 & 4: Negative X (rear legs, mirrored geometry)
+
+  Prismatic (slider) link inertial COM offsets are l1_inertia_xyz … l4_inertia_xyz
+  (properties below). First component: legs 1 and 3 use −X, legs 2 and 4 use +X;
+  Y and Z match across all four. If you change those properties, update this note
+  so it stays accurate—do not infer signs from front/rear leg grouping alone.
 -->
 <robot xmlns:xacro="http://www.ros.org/wiki/xacro" name="dog2">
 
   <xacro:arg name="controllers_yaml" default="$(find dog2_description)/config/ros2_controllers.yaml"/>
   <xacro:property name="controllers_yaml" value="$(arg controllers_yaml)"/>
 
-  <!-- Joint limits -->
-  <xacro:property name="hip_lower_limit" value="-2.618"/>
-  <xacro:property name="hip_upper_limit" value="2.618"/>
-  <xacro:property name="hip_effort" value="50"/>
-  <xacro:property name="hip_velocity" value="20"/>
-  <xacro:property name="knee_lower_limit" value="-2.8"/>
-  <xacro:property name="knee_upper_limit" value="2.8"/>
-  <xacro:property name="knee_effort" value="50"/>
-  <xacro:property name="knee_velocity" value="20"/>
+  <!--
+    Joint limits (authoritative for RViz, IK, runtime clamping).
+    femur_joint and tibia_joint are distinct pitch DOFs: each has its own lower/upper/effort/velocity.
+  -->
+  <xacro:property name="coxa_lower_limit" value="-2.618"/>
+  <xacro:property name="coxa_upper_limit" value="2.618"/>
+  <xacro:property name="coxa_effort" value="50"/>
+  <xacro:property name="coxa_velocity" value="20"/>
+  <xacro:property name="femur_lower_limit" value="-2.8"/>
+  <xacro:property name="femur_upper_limit" value="2.8"/>
+  <xacro:property name="femur_effort" value="50"/>
+  <xacro:property name="femur_velocity" value="20"/>
+  <xacro:property name="tibia_lower_limit" value="-2.8"/>
+  <xacro:property name="tibia_upper_limit" value="2.8"/>
+  <xacro:property name="tibia_effort" value="50"/>
+  <xacro:property name="tibia_velocity" value="20"/>
   <xacro:property name="prismatic_effort" value="100"/>
   <xacro:property name="prismatic_velocity" value="5"/>
 
@@ -36,17 +41,34 @@
   <!-- Local rail axis: chosen so R_rail * axis = base_link +X for +q slide (left vs right mirror). -->
   <xacro:property name="leg_rail_axis_L" value="1 0 0"/>
   <xacro:property name="leg_rail_axis_R" value="-1 0 0"/>
+  <!-- Right coxa joint rpy used on rh; kept for docs / tooling. -->
   <xacro:property name="leg_hip_rpy_R" value="${PI_CONST} 0 ${half_pi}"/>
   <xacro:property name="leg_knee_xyz_R" value="-0.0233 -0.055 -0.0254"/>
   <xacro:property name="leg_thigh_mesh_flip_rpy" value="0 ${PI_CONST} 0"/>
+  <!--
+    Phase 2 — classify before moving (do not flatten blindly)
+    ===========================================================
+    Phase 2 mount absorption (hip_rpy_R → mount L + rail L + hip_xyz closure) rolled back
+    on rh and rf: translation-only closure broke coxa_link full SE(3). Both legs again use
+    leg_rail_rpy_R + leg_rail_axis_R + leg_hip_rpy_R + leg_knee_xyz_R; rf keeps explicit
+    hip_xyz 0.0116 0.0199 0.055 (pre-Phase 2). Next: axis_frame explicit joints; any redo
+    must SE(3)-match coxa/femur/tibia/foot, not position-only.
+
+    (a′) leg_knee_xyz_R — still on rh/rf femur_joint (B).
+
+    Re-run dog2_description/scripts/check_joint_semantics.py and kinematics tests
+    after any relocation of these parameters.
+  -->
 
   <!-- Joint passive dynamics (simulation stabilization) -->
   <xacro:property name="prismatic_damping" value="0.25"/>
   <xacro:property name="prismatic_friction" value="0.05"/>
   <xacro:property name="hip_damping" value="0.12"/>
   <xacro:property name="hip_friction" value="0.02"/>
-  <xacro:property name="knee_damping" value="0.15"/>
-  <xacro:property name="knee_friction" value="0.02"/>
+  <xacro:property name="femur_damping" value="0.15"/>
+  <xacro:property name="femur_friction" value="0.02"/>
+  <xacro:property name="tibia_damping" value="0.15"/>
+  <xacro:property name="tibia_friction" value="0.02"/>
 
   <!-- Contact model (conservative baseline for stability) -->
   <xacro:property name="foot_contact_mu1" value="1.0"/>
@@ -65,9 +87,9 @@
   <xacro:property name="leg4_shin_xyz" value="-0.0265089672547710 -0.1429895138560395 -0.0691152554666486"/>
 
   <!--
-    foot_tip_xyz (tibia_link frame): *_foot_fixed / 绿色调试球心位置（回退前工作区基准）。
-    YZ: L3 沿胫骨在 YZ 平面内方向；X: 向机身横向收拢（foot_tip_lateral_inboard_m）。
-    Y: +半直径（+r）后再沿 −tibia Y 平移 1.5×直径（=3r）；Z: foot_tip_z_down_m；与 leg_parameters 一致。
+    *_foot_tip_xyz (tibia_link): origin of *_foot_fixed — analytical foot sphere center
+    (foot_link visual / collision / inertial). X: foot_tip_lateral_inboard_m with per-leg sign;
+    Y/Z: built from foot_sphere_radius helpers plus literals in leg12_*, leg3_*, leg4_* below.
   -->
   <xacro:property name="foot_sphere_radius" value="0.012"/>
   <xacro:property name="foot_tip_plus_y_half_diameter_m" value="${foot_sphere_radius}"/>
@@ -78,32 +100,26 @@
   <xacro:property name="leg3_foot_tip_xyz" value="-${foot_tip_lateral_inboard_m} ${foot_tip_plus_y_half_diameter_m - foot_tip_minus_y_one_and_half_diameter_m - 0.269179} -0.142168"/>
   <xacro:property name="leg4_foot_tip_xyz" value="-${foot_tip_lateral_inboard_m} ${foot_tip_plus_y_half_diameter_m - foot_tip_minus_y_one_and_half_diameter_m - 0.269202} -0.142121"/>
 
-  <!-- World and base -->
-  <link name="base_footprint"/>
-
   <!--
-    Semantic base placement (current source-of-truth)
+    Semantic base root (current source-of-truth)
     ============================================================
-    Historical urdf_shift_* bookkeeping has been removed. The fixed transform
-    from base_footprint to the semantic base_link is now expressed directly as
-    a normal URDF constant.
+    Historical urdf_shift_* bookkeeping and the fake URDF-level
+    `base_footprint` root have both been removed. `base_link` is now the only
+    URDF root for control / dynamics / leg installation.
 
     STRICT BOUNDARY:
       * DO NOT re-introduce urdf_shift_* or a second hidden compensation layer
         in TF publishers, sensor extrinsics, MPC/WBC kinematics, Python config,
         or controller code.
-      * base_offset_joint remains non-identity on purpose: it places the
-        semantic base_link relative to base_footprint while preserving the
-        current semantic base definition.
+      * DO NOT re-introduce a fake `base_footprint` or another fixed root
+        wrapper inside the URDF just to preserve historical naming.
 
     MAINTENANCE RULE:
-      If base_footprint/base_link placement is intentionally redefined in the
-      future, update the explicit base_offset_joint constants below and
-      re-baseline the guardrails and stand-geometry golden.
+      If a planning/ground-projection frame is needed in the future, publish a
+      runtime `base_footprint` TF outside the URDF. Keep the xacro rooted at
+      semantic `base_link` and re-baseline the guardrails and stand-geometry
+      golden only when the semantic base definition itself changes.
   -->
-  <xacro:property name="base_offset_x" value="0.2492"/>
-  <xacro:property name="base_offset_y" value="0.12503"/>
-  <xacro:property name="base_offset_z" value="-0.2649"/>
   <!--
     Semantic trunk root definition
     ============================================================
@@ -111,9 +127,9 @@
     root near the geometric center of the four leg mounts. It is not required to
     coincide with the CAD shell origin.
 
-    base_link_cad_fixed therefore carries the shell offset, while leg mounts,
-    trunk inertial, and trunk collision are all re-expressed in this semantic
-    base_link frame.
+    The trunk mesh still uses a baked visual offset, so the visual origin is
+    expressed directly on base_link while leg mounts, trunk inertial, and trunk
+    collision remain in this semantic base_link frame.
   -->
   <xacro:property name="base_link_semantic_origin_x" value="0.248975"/>
   <xacro:property name="base_link_semantic_origin_y" value="0.122500"/>
@@ -124,24 +140,32 @@
                   value="${0.243115 - base_link_semantic_origin_x} ${0.122499 - base_link_semantic_origin_y} ${-0.006837 - base_link_semantic_origin_z}"/>
   <xacro:property name="trunk_collision_box_size" value="0.342 0.160 0.100333"/>
 
-  <joint name="base_offset_joint" type="fixed">
-    <parent link="base_footprint"/>
-    <child link="base_link"/>
-    <origin xyz="${base_offset_x} ${base_offset_y} ${base_offset_z}" rpy="0 0 ${PI_CONST}"/>
-  </joint>
-
   <!--
-    Dual-base scaffold (migration):
-      base_link        = ROS / control / Pinocchio root frame (X front, Y left, Z up),
-                         now carrying trunk inertial + collision.
-      base_link_cad    = CAD trunk visual carrier; leg mounts parent = base_link.
-      base_link_cad_fixed = fixed shell offset from the semantic trunk root.
-    NOTE:
-      Stage 4 (current): base_link has been formally redefined around the
-      leg-mount centroid. base_link_cad is now a pure shell carrier attached
-      through a non-identity fixed transform.
+    Current trunk ownership:
+      base_link = URDF / ROS / control / Pinocchio root frame
+                  (X front, Y left, Z up), carrying trunk inertial + collision
+                  + visual, plus all four leg mounts.
+    base_link is defined around the leg-mount centroid. The trunk mesh still
+    keeps its historical baked visual offset, expressed directly below.
   -->
   <link name="base_link">
+    <!--
+      Trunk inertial mapping (FROZEN unless re-baselined on purpose)
+      ================================================================
+      The inertial <origin rpy="half_pi 0 0"/> (+90 deg about +X, property half_pi)
+      is intentional: it maps exported rigid-body inertia from the CAD solid frame
+      into base_link as a REP-103 body (X forward, Y left, Z up). After this
+      rotation, the diagonal entries align with plausible trunk semantics in
+      base_link (lightest about body longitudinal X, heaviest about body-vertical Z).
+
+      The small ixy coupling is expected: CAD-export tensor plus frame rotation,
+      not principal axes already diagonal in base_link.
+
+      Do not remove this rpy, do not set it to 0 0 0, and do not tweak this block
+      for cosmetic reasons. Revisit only with explicit new evidence (e.g. inertia
+      re-exported already in the ROS base_link convention, CAD axis convention
+      change, or a written report that this rotation is no longer required).
+    -->
     <inertial>
       <origin xyz="${0.2492 - base_link_semantic_origin_x} ${0.12503 - base_link_semantic_origin_y} ${0.0 - base_link_semantic_origin_z}" rpy="${half_pi} 0 0"/>
       <mass value="6.0"/>
@@ -153,17 +177,8 @@
         <box size="${trunk_collision_box_size}"/>
       </geometry>
     </collision>
-  </link>
-
-  <joint name="base_link_cad_fixed" type="fixed">
-    <parent link="base_link"/>
-    <child link="base_link_cad"/>
-    <origin xyz="${0.0 - base_link_semantic_origin_x} ${0.0 - base_link_semantic_origin_y} ${0.0 - base_link_semantic_origin_z}" rpy="0 0 0"/>
-  </joint>
-
-  <link name="base_link_cad">
     <visual>
-      <origin xyz="-0.9780 0.87203 -0.2649" rpy="0 0 0"/>
+      <origin xyz="${0.0 - base_link_semantic_origin_x - 0.9780} ${0.0 - base_link_semantic_origin_y + 0.87203} -0.2649" rpy="0 0 0"/>
       <geometry>
         <mesh filename="package://dog2_description/meshes/base_link.STL"/>
       </geometry>
@@ -186,34 +201,35 @@
     Family: **1P + 3R** redundant leg — prismatic rail on the body plus a
     classic **Yaw–Pitch–Pitch** (spider / insect–like) chain in 3D.
 
-    Kinematic shorthand: **P – R_z – R_y – R_y** (mixed / redundant leg).
+    Kinematic shorthand: **P – R_z – R_y – R_y** (mixed / redundant leg). The
+    R_z / R_y labels name rotation *families* (yaw vs pitch); the signed list
+    below is the effective instantaneous axis in **base_link** at q = 0 (nominal
+    pose), not “per-leg flip” shorthand.
 
-    **base_link** (REP-103: X forward, Y left, Z up) — *effective* motion
-    directions for positive joint coordinates after composing each joint’s
-    fixed origin and local axis xyz (validated by
-    dog2_description/scripts/check_joint_semantics.py):
+    **base_link** (REP-103: X forward, Y left, Z up). Validated by
+    dog2_description/scripts/check_joint_semantics.py:
 
-    rail_joint:  body slide, semantic axis in base_link +X (forward); local
-                 axis xyz may be mirrored per leg so R_rail*axis = +X.
-    coxa_joint:  hip yaw sweep, semantic axis vertical (Z class, sign per leg).
-    femur_joint: thigh pitch, semantic axis lateral (Y class).
-    tibia_joint: knee pitch, axis parallel to femur in nominal pose.
+    rail_joint:  **+X** (prismatic; local rail axis is mirrored per leg so
+                 composed motion is always body +X for +q).
+    coxa_joint:  semantic hip yaw about **−Z** (all four legs at nominal pose).
+    femur_joint: semantic thigh pitch about **−Y**.
+    tibia_joint: semantic knee pitch about **−Y** (parallel to femur at q = 0).
 
-    URDF axis vectors below are expressed in each joint’s URDF joint
-    frame (child link at q=0); they are **not** raw base_link tuples. The
-    bullet list above is what controllers, Pinocchio, and
-    dog2_motion_control/dog2_motion_control/joint_semantics.py must match.
+    URDF <axis> vectors are in each joint’s URDF joint frame (child at q = 0);
+    they are **not** raw base_link tuples. Use the signed semantics above in
+    control / IK discussion; controllers, Pinocchio, and
+    dog2_motion_control/dog2_motion_control/joint_semantics.py must stay
+    consistent with it.
 
-    **Do not** reintroduce a second global CAD shift beyond
-    `base_offset_joint`; see the semantic base placement comment above.
+    **Do not** reintroduce a second global CAD/root compensation layer; see
+    the semantic base placement comment above.
 
     ========================================================================
   -->
   <!-- Leg macro -->
   <xacro:macro name="leg" params="prefix leg_num parent_link rail_axis p_low p_up thigh_xyz shin_xyz slider_inertia_xyz foot_tip_xyz
                                  hip_rpy:='0 0 ${half_pi}' hip_xyz:='-0.016 0.0199 0.055'
-                                 knee_xyz:='-0.0233 -0.055 0.0274'
-                                 thigh_rpy:='0 0 0' thigh_col_rpy:='0 0 0'">
+                                 knee_xyz:='-0.0233 -0.055 0.0274'">
 
   <link name="${prefix}_rail_link">
     <inertial>
@@ -244,6 +260,40 @@
     <dynamics damping="${prismatic_damping}" friction="${prismatic_friction}"/>
   </joint>
 
+  <xacro:property name="coxa_parent_link" value="${prefix}_rail_link"/>
+  <xacro:property name="coxa_child_link" value="${prefix}_coxa_link"/>
+  <xacro:property name="coxa_joint_xyz_eff" value="${hip_xyz}"/>
+  <xacro:property name="coxa_joint_rpy_eff" value="${hip_rpy}"/>
+  <xacro:property name="coxa_axis_eff" value="-1 0 0"/>
+  <xacro:if value="${prefix == 'lf' or prefix == 'lh'}">
+    <link name="${prefix}_coxa_axis_frame"/>
+    <link name="${prefix}_coxa_drive_frame"/>
+    <joint name="${prefix}_coxa_axis_fixed" type="fixed">
+      <parent link="${prefix}_rail_link"/>
+      <child link="${prefix}_coxa_axis_frame"/>
+      <origin xyz="${hip_xyz}" rpy="${-half_pi} 0 0"/>
+    </joint>
+    <xacro:property name="coxa_parent_link" value="${prefix}_coxa_axis_frame"/>
+    <xacro:property name="coxa_child_link" value="${prefix}_coxa_drive_frame"/>
+    <xacro:property name="coxa_joint_xyz_eff" value="0 0 0"/>
+    <xacro:property name="coxa_joint_rpy_eff" value="0 0 0"/>
+    <xacro:property name="coxa_axis_eff" value="0 0 -1"/>
+  </xacro:if>
+  <xacro:if value="${prefix == 'rh'}">
+    <link name="${prefix}_coxa_axis_frame"/>
+    <link name="${prefix}_coxa_drive_frame"/>
+    <joint name="${prefix}_coxa_axis_fixed" type="fixed">
+      <parent link="${prefix}_rail_link"/>
+      <child link="${prefix}_coxa_axis_frame"/>
+      <origin xyz="${hip_xyz}" rpy="0 ${-half_pi} ${-half_pi}"/>
+    </joint>
+    <xacro:property name="coxa_parent_link" value="${prefix}_coxa_axis_frame"/>
+    <xacro:property name="coxa_child_link" value="${prefix}_coxa_drive_frame"/>
+    <xacro:property name="coxa_joint_xyz_eff" value="0 0 0"/>
+    <xacro:property name="coxa_joint_rpy_eff" value="0 0 0"/>
+    <xacro:property name="coxa_axis_eff" value="0 0 -1"/>
+  </xacro:if>
+
   <link name="${prefix}_coxa_link">
     <inertial>
       <origin rpy="0 0 0" xyz="-0.0233 -0.0383 0.000879"/>
@@ -264,13 +314,27 @@
   </link>
 
   <joint name="${prefix}_coxa_joint" type="revolute">
-    <origin rpy="${hip_rpy}" xyz="${hip_xyz}"/>
-    <parent link="${prefix}_rail_link"/>
-    <child link="${prefix}_coxa_link"/>
-    <axis xyz="-1 0 0"/>
-    <limit effort="${hip_effort}" lower="${hip_lower_limit}" upper="${hip_upper_limit}" velocity="${hip_velocity}"/>
+    <origin rpy="${coxa_joint_rpy_eff}" xyz="${coxa_joint_xyz_eff}"/>
+    <parent link="${coxa_parent_link}"/>
+    <child link="${coxa_child_link}"/>
+    <axis xyz="${coxa_axis_eff}"/>
+    <limit effort="${coxa_effort}" lower="${coxa_lower_limit}" upper="${coxa_upper_limit}" velocity="${coxa_velocity}"/>
     <dynamics damping="${hip_damping}" friction="${hip_friction}"/>
   </joint>
+  <xacro:if value="${prefix == 'lf' or prefix == 'lh'}">
+    <joint name="${prefix}_coxa_pose_fixed" type="fixed">
+      <parent link="${prefix}_coxa_drive_frame"/>
+      <child link="${prefix}_coxa_link"/>
+      <origin xyz="0 0 0" rpy="0 ${-half_pi} ${half_pi}"/>
+    </joint>
+  </xacro:if>
+  <xacro:if value="${prefix == 'rh'}">
+    <joint name="${prefix}_coxa_pose_fixed" type="fixed">
+      <parent link="${prefix}_coxa_drive_frame"/>
+      <child link="${prefix}_coxa_link"/>
+      <origin xyz="0 0 0" rpy="0 ${-half_pi} 0"/>
+    </joint>
+  </xacro:if>
 
   <link name="${prefix}_femur_link">
     <inertial>
@@ -278,29 +342,63 @@
       <mass value="0.4"/>
       <inertia ixx="0.000666" ixy="0" ixz="0" iyy="0.000356" iyz="0.000266" izz="0.000534"/>
     </inertial>
+    <!-- Femur mesh/collision-only rpy (not joint semantics). rf: CAD mesh flip via leg_thigh_mesh_flip_rpy. -->
+    <xacro:property name="thigh_vis_rpy" value="0 0 0"/>
+    <xacro:property name="thigh_col_rpy_eff" value="0 0 0"/>
+    <xacro:if value="${prefix == 'rf'}">
+      <xacro:property name="thigh_vis_rpy" value="${leg_thigh_mesh_flip_rpy}"/>
+      <xacro:property name="thigh_col_rpy_eff" value="${leg_thigh_mesh_flip_rpy}"/>
+    </xacro:if>
     <visual>
-      <origin rpy="${thigh_rpy}" xyz="0 0 0"/>
+      <origin rpy="${thigh_vis_rpy}" xyz="0 0 0"/>
       <geometry>
         <mesh filename="package://dog2_description/meshes/l${leg_num}11.STL"/>
       </geometry>
       <material name="mat_white"><color rgba="1 1 1 1"/></material>
     </visual>
     <collision>
-      <origin rpy="${thigh_col_rpy}" xyz="0 0 0"/>
+      <origin rpy="${thigh_col_rpy_eff}" xyz="0 0 0"/>
       <geometry>
         <mesh filename="package://dog2_description/meshes/collision/l${leg_num}11_collision.STL"/>
       </geometry>
     </collision>
   </link>
 
+  <xacro:property name="femur_parent_link" value="${prefix}_coxa_link"/>
+  <xacro:property name="femur_child_link" value="${prefix}_femur_link"/>
+  <xacro:property name="femur_joint_xyz_eff" value="${knee_xyz}"/>
+  <xacro:property name="femur_joint_rpy_eff" value="${half_pi} ${half_pi} 0"/>
+  <xacro:property name="femur_axis_eff" value="-1 0 0"/>
+  <xacro:if value="${prefix == 'lf' or prefix == 'lh' or prefix == 'rh' or prefix == 'rf'}">
+    <link name="${prefix}_femur_axis_frame"/>
+    <link name="${prefix}_femur_drive_frame"/>
+    <joint name="${prefix}_femur_axis_fixed" type="fixed">
+      <parent link="${prefix}_coxa_link"/>
+      <child link="${prefix}_femur_axis_frame"/>
+      <origin xyz="${knee_xyz}" rpy="${-half_pi} 0 0"/>
+    </joint>
+    <xacro:property name="femur_parent_link" value="${prefix}_femur_axis_frame"/>
+    <xacro:property name="femur_child_link" value="${prefix}_femur_drive_frame"/>
+    <xacro:property name="femur_joint_xyz_eff" value="0 0 0"/>
+    <xacro:property name="femur_joint_rpy_eff" value="0 0 0"/>
+    <xacro:property name="femur_axis_eff" value="0 -1 0"/>
+  </xacro:if>
+
   <joint name="${prefix}_femur_joint" type="revolute">
-    <origin rpy="${half_pi} ${half_pi} 0" xyz="${knee_xyz}"/>
-    <parent link="${prefix}_coxa_link"/>
-    <child link="${prefix}_femur_link"/>
-    <axis xyz="-1 0 0"/>
-    <limit effort="${knee_effort}" lower="${knee_lower_limit}" upper="${knee_upper_limit}" velocity="${knee_velocity}"/>
-    <dynamics damping="${knee_damping}" friction="${knee_friction}"/>
+    <origin rpy="${femur_joint_rpy_eff}" xyz="${femur_joint_xyz_eff}"/>
+    <parent link="${femur_parent_link}"/>
+    <child link="${femur_child_link}"/>
+    <axis xyz="${femur_axis_eff}"/>
+    <limit effort="${femur_effort}" lower="${femur_lower_limit}" upper="${femur_upper_limit}" velocity="${femur_velocity}"/>
+    <dynamics damping="${femur_damping}" friction="${femur_friction}"/>
   </joint>
+  <xacro:if value="${prefix == 'lf' or prefix == 'lh' or prefix == 'rh' or prefix == 'rf'}">
+    <joint name="${prefix}_femur_pose_fixed" type="fixed">
+      <parent link="${prefix}_femur_drive_frame"/>
+      <child link="${prefix}_femur_link"/>
+      <origin xyz="0 0 0" rpy="0 ${PI_CONST} ${-half_pi}"/>
+    </joint>
+  </xacro:if>
 
   <link name="${prefix}_tibia_link">
     <inertial>
@@ -314,6 +412,7 @@
       </geometry>
       <material name="mat_white"><color rgba="1 1 1 1"/></material>
     </visual>
+    <!-- Collision is mesh STL (not a box/cylinder primitive). -->
     <collision>
       <geometry>
         <mesh filename="package://dog2_description/meshes/collision/l${leg_num}111_collision.STL"/>
@@ -321,14 +420,40 @@
     </collision>
   </link>
 
+  <xacro:property name="tibia_parent_link" value="${prefix}_femur_link"/>
+  <xacro:property name="tibia_child_link" value="${prefix}_tibia_link"/>
+  <xacro:property name="tibia_joint_xyz_eff" value="0 -0.15201 0.12997"/>
+  <xacro:property name="tibia_joint_rpy_eff" value="0 0 0"/>
+  <xacro:property name="tibia_axis_eff" value="-1 0 0"/>
+  <xacro:if value="${prefix == 'lf' or prefix == 'lh' or prefix == 'rh' or prefix == 'rf'}">
+    <link name="${prefix}_tibia_axis_frame"/>
+    <link name="${prefix}_tibia_drive_frame"/>
+    <joint name="${prefix}_tibia_axis_fixed" type="fixed">
+      <parent link="${prefix}_femur_link"/>
+      <child link="${prefix}_tibia_axis_frame"/>
+      <origin xyz="0 -0.15201 0.12997" rpy="0 0 ${-half_pi}"/>
+    </joint>
+    <xacro:property name="tibia_parent_link" value="${prefix}_tibia_axis_frame"/>
+    <xacro:property name="tibia_child_link" value="${prefix}_tibia_drive_frame"/>
+    <xacro:property name="tibia_joint_xyz_eff" value="0 0 0"/>
+    <xacro:property name="tibia_axis_eff" value="0 -1 0"/>
+  </xacro:if>
+
   <joint name="${prefix}_tibia_joint" type="revolute">
-    <origin rpy="0 0 0" xyz="0 -0.15201 0.12997"/>
-    <parent link="${prefix}_femur_link"/>
-    <child link="${prefix}_tibia_link"/>
-    <axis xyz="-1 0 0"/>
-    <limit effort="${knee_effort}" lower="${knee_lower_limit}" upper="${knee_upper_limit}" velocity="${knee_velocity}"/>
-    <dynamics damping="${knee_damping}" friction="${knee_friction}"/>
+    <origin rpy="${tibia_joint_rpy_eff}" xyz="${tibia_joint_xyz_eff}"/>
+    <parent link="${tibia_parent_link}"/>
+    <child link="${tibia_child_link}"/>
+    <axis xyz="${tibia_axis_eff}"/>
+    <limit effort="${tibia_effort}" lower="${tibia_lower_limit}" upper="${tibia_upper_limit}" velocity="${tibia_velocity}"/>
+    <dynamics damping="${tibia_damping}" friction="${tibia_friction}"/>
   </joint>
+  <xacro:if value="${prefix == 'lf' or prefix == 'lh' or prefix == 'rh' or prefix == 'rf'}">
+    <joint name="${prefix}_tibia_pose_fixed" type="fixed">
+      <parent link="${prefix}_tibia_drive_frame"/>
+      <child link="${prefix}_tibia_link"/>
+      <origin xyz="0 0 0" rpy="0 0 ${half_pi}"/>
+    </joint>
+  </xacro:if>
 
   <joint name="${prefix}_foot_fixed" type="fixed">
     <origin rpy="0 0 0" xyz="${foot_tip_xyz}"/>
@@ -358,7 +483,11 @@
     </collision>
   </link>
 
-  <!-- 胫骨原语若蹭地：低刚度/低摩擦，主触地仍由 foot 球承担。 -->
+  <!--
+    tibia_link: URDF collision is mesh (see collision block above), not a primitive.
+    If the shin mesh brushes terrain, keep Gazebo contact soft/low-friction so
+    the foot_link sphere stays the primary support.
+  -->
   <gazebo reference="${prefix}_tibia_link">
     <mu1>0.05</mu1>
     <mu2>0.05</mu2>
@@ -387,15 +516,22 @@
 
   <!-- Leg instantiations -->
   <!--
-    *_leg_mount is the fixed installation frame of each leg relative to base_link.
-    left/right/front/rear differences should be expressed here.
-    The leg macro below represents a reusable standard leg chain.
+    Layering target (refactor guideline; world geometry unchanged until re-baselined)
+    =============================================================================
+    (1) Mount: *only* *_leg_mount_fixed origin vs base_link — real chassis asymmetry
+        allowed here with a mechanical note.
+    (2) Semantic chain: rail→coxa→femur→tibia→foot — aim for one parameter set;
+        avoid per-leg hip/knee/foot patch unless unavoidable.
+    (3) Geometry: mesh/collision-only flips — belong on visual/collision <origin>
+        or an extra geom fixed frame, not on actuated joint semantics.
 
-    Leg topology reminder (base_link-local installation frames):
-      - lf: left front  (左前)
-      - lh: left rear   (左后)
-      - rh: right rear  (右后)
-      - rf: right front (右前)
+    Current state: rh/rf both use leg_rail_rpy_R + leg_rail_axis_R + leg_hip_rpy_R +
+    leg_knee_xyz_R (Phase 2 mount experiment rolled back on both). rf explicit hip_xyz
+    0.0116 0.0199 0.055. lh hip_xyz override unchanged. rf femur mesh/collision flip stays
+    macro-internal (Phase 1). See Phase 2 block after leg_knee_xyz_R.
+
+    Leg topology (base_link-local mount frames):
+      lf left front | lh left rear | rh right rear | rf right front
   -->
   <link name="lf_leg_mount"/>
   <joint name="lf_leg_mount_fixed" type="fixed">
@@ -436,17 +572,16 @@
              hip_xyz="0.016 0.0199 0.055"
              foot_tip_xyz="${leg12_foot_tip_xyz}"/>
 
-  <!-- Leg 3: Rear Right (rh) via rh_leg_mount -->
+  <!-- Leg 3: Rear Right (rh) via rh_leg_mount — Phase 2 mount absorption rolled back (coxa full SE(3)). -->
   <xacro:leg prefix="rh" leg_num="3" parent_link="rh_leg_mount" rail_axis="${leg_rail_axis_R}" p_low="0.0" p_up="0.111"
              thigh_xyz="${leg3_thigh_xyz}" shin_xyz="${leg3_shin_xyz}" slider_inertia_xyz="${l3_inertia_xyz}"
              hip_rpy="${leg_hip_rpy_R}" knee_xyz="${leg_knee_xyz_R}"
              foot_tip_xyz="${leg3_foot_tip_xyz}"/>
 
-  <!-- Leg 4: Front Right (rf) via rf_leg_mount -->
+  <!-- Leg 4: Front Right (rf): chain semantics restored pre-Phase 2; femur mesh flip remains Phase 1 (macro internal). -->
   <xacro:leg prefix="rf" leg_num="4" parent_link="rf_leg_mount" rail_axis="${leg_rail_axis_R}" p_low="-0.111" p_up="0.0"
              thigh_xyz="${leg4_thigh_xyz}" shin_xyz="${leg4_shin_xyz}" slider_inertia_xyz="${l4_inertia_xyz}"
              hip_rpy="${leg_hip_rpy_R}" hip_xyz="0.0116 0.0199 0.055" knee_xyz="${leg_knee_xyz_R}"
-             thigh_rpy="${leg_thigh_mesh_flip_rpy}" thigh_col_rpy="${leg_thigh_mesh_flip_rpy}"
              foot_tip_xyz="${leg4_foot_tip_xyz}"/>
 
   <!-- ROS 2 Control -->

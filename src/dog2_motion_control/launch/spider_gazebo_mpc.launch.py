@@ -25,7 +25,6 @@ from launch.actions import (
     IncludeLaunchDescription,
     SetEnvironmentVariable,
     RegisterEventHandler,
-    TimerAction,
     OpaqueFunction,
 )
 from launch.event_handlers import OnProcessExit
@@ -366,10 +365,10 @@ def generate_launch_description():
         robot_description = {"robot_description": robot_description_xml}
 
         standing_pose_defaults = {
-            "lf": {"rail_m": 0.0, "hip_roll_rad": 0.0, "hip_pitch_rad": -0.3, "knee_pitch_rad": 0.6},
-            "lh": {"rail_m": 0.0, "hip_roll_rad": 0.0, "hip_pitch_rad": -0.3, "knee_pitch_rad": 0.6},
-            "rh": {"rail_m": 0.0, "hip_roll_rad": 0.0, "hip_pitch_rad": -0.3, "knee_pitch_rad": 0.6},
-            "rf": {"rail_m": 0.0, "hip_roll_rad": 0.0, "hip_pitch_rad": -0.3, "knee_pitch_rad": 0.6},
+            "lf": {"rail_m": 0.0, "hip_roll_rad": 0.0, "hip_pitch_rad": -0.3, "knee_pitch_rad": -0.6},
+            "lh": {"rail_m": 0.0, "hip_roll_rad": 0.0, "hip_pitch_rad": -0.3, "knee_pitch_rad": -0.6},
+            "rh": {"rail_m": 0.0, "hip_roll_rad": 0.0, "hip_pitch_rad": -0.3, "knee_pitch_rad": -0.6},
+            "rf": {"rail_m": 0.0, "hip_roll_rad": 0.0, "hip_pitch_rad": -0.3, "knee_pitch_rad": -0.6},
         }
         standing_pose = standing_pose_defaults
         try:
@@ -668,11 +667,6 @@ def generate_launch_description():
                     )
                 )
 
-        delayed_effort_controller = TimerAction(
-            period=0.5,
-            actions=[load_effort_controller],
-        )
-
         start_joint_state_broadcaster_after_gain = RegisterEventHandler(
             event_handler=OnProcessExit(
                 target_action=gz_gain_setter,
@@ -683,7 +677,7 @@ def generate_launch_description():
         start_effort_controller_after_jsb = RegisterEventHandler(
             event_handler=OnProcessExit(
                 target_action=load_joint_state_broadcaster,
-                on_exit=[delayed_effort_controller],
+                on_exit=[load_effort_controller],
             )
         )
 

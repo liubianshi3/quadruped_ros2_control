@@ -638,12 +638,8 @@ class MPCRobotController(Node):
         # - If `urdf_xml` is provided, we directly build from XML string.
         # - Otherwise, we prefer expanding the canonical xacro file (guarantees joint names
         #   like lf_rail_joint/... are present) and build from the resulting URDF XML.
-        # - `urdf_path` is kept as an override for advanced use-cases.
-        default_urdf_path = os.path.join(
-            get_package_share_directory("dog2_description"),
-            "urdf",
-            "dog2.urdf",
-        )
+        # - `urdf_path` is kept as an explicit override for pre-expanded URDF snapshots.
+        default_urdf_path = ""
         default_urdf_xacro_path = os.path.join(
             get_package_share_directory("dog2_description"),
             "urdf",
@@ -691,8 +687,12 @@ class MPCRobotController(Node):
                 },
             )
             self._pin_model = pin.buildModelFromXML(doc.toxml(), pin.JointModelFreeFlyer())
-        else:
+        elif urdf_path.strip():
             self._pin_model = pin.buildModelFromUrdf(urdf_path, pin.JointModelFreeFlyer())
+        else:
+            raise RuntimeError(
+                "No URDF source configured. Set one of urdf_xml, urdf_xacro_path, or urdf_path."
+            )
 
         self._pin_data = self._pin_model.createData()
 

@@ -25,15 +25,8 @@ overlap with the CAD shell.
   - canonical control / dynamics / leg-install root
   - carries trunk inertial
   - carries the current trunk collision primitive
+  - carries the trunk visual mesh with its current baked offset
   - parents all four `*_leg_mount` frames
-
-- `base_link_cad`
-  - visual-only CAD shell carrier
-  - does not carry trunk inertial or collision
-
-- `base_link_cad_fixed`
-  - explicit fixed transform from the semantic trunk root to the CAD shell
-  - intentionally non-identity in the current Stage 4 URDF
 
 The semantic `base_link` origin is currently defined near the centroid of the
 four leg mounts:
@@ -46,30 +39,32 @@ four leg mounts:
 
 This means:
 
+- the URDF root is now `base_link`
 - control / kinematics should reason in the semantic `base_link` frame
-- CAD shell placement should be interpreted through `base_link_cad_fixed`
+- the trunk mesh is attached directly to `base_link`
 - legacy `urdf_shift_*` properties have been removed from the xacro source
-- `base_offset_joint` now explicitly places the semantic `base_link` relative
-  to `base_footprint` with:
-  - `xyz = (0.2492, 0.12503, -0.2649)`
-  - `rpy = (0, 0, pi)`
-- the joint name `base_offset_joint` is retained for compatibility, but it is
-  no longer a hidden CAD-compensation layer
+- legacy `base_footprint` / `base_offset_joint` / `base_link_cad` are no longer part of the URDF
+- if a true planning or ground-projection `base_footprint` is needed later, it
+  should be published as a runtime TF outside the URDF
 
 ## Modifying Joint Limits
 
 Edit the joint-limit properties near the top of [`urdf/dog2.urdf.xacro`](./urdf/dog2.urdf.xacro):
 
 ```xml
-<xacro:property name="hip_lower_limit" value="-2.618"/>
-<xacro:property name="hip_upper_limit" value="2.618"/>
-<xacro:property name="knee_lower_limit" value="-2.8"/>
-<xacro:property name="knee_upper_limit" value="2.8"/>
+<xacro:property name="coxa_lower_limit" value="-2.618"/>
+<xacro:property name="coxa_upper_limit" value="2.618"/>
+<xacro:property name="femur_lower_limit" value="-2.8"/>
+<xacro:property name="femur_upper_limit" value="2.8"/>
+<xacro:property name="tibia_lower_limit" value="-2.8"/>
+<xacro:property name="tibia_upper_limit" value="2.8"/>
 <xacro:property name="prismatic_effort" value="100"/>
 <xacro:property name="prismatic_velocity" value="5"/>
 ```
 
-Keep limit changes in xacro only. Do not edit generated snapshots by hand.
+Keep limit changes in xacro only. `dog2_motion_control` now reads the
+authoritative limits from the xacro/URDF path at runtime, so do not maintain a
+second rotational-limit source in controller YAML files or generated snapshots.
 
 ## Build and Validate
 
@@ -82,11 +77,10 @@ python3 src/dog2_description/scripts/check_joint_semantics.py src/dog2_descripti
 What these checks verify:
 
 - `check_urdf_shift_boundary.py`
-  - `base_offset_joint` matches the explicit semantic base placement constants
+  - `base_link` is the only URDF root
+  - legacy `base_footprint` / `base_offset_joint` / `base_link_cad` are absent
   - legacy `urdf_shift_*` tokens are absent from the xacro source
-  - `base_link` keeps trunk inertial plus the current trunk collision primitive
-  - `base_link_cad` keeps the trunk visual shell only
-  - `base_link_cad_fixed` matches the current semantic shell offset
+  - `base_link` keeps trunk inertial, trunk collision, and the current trunk visual mesh origin
   - leg installation still goes through `*_leg_mount`
   - rail joints still start from those mount frames with zero local origin
 

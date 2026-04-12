@@ -84,6 +84,7 @@ class JointController:
             self._publisher_queue_depth,
         )
 
+        self.commanded_rail_targets: Dict[str, float] = {}
         self.last_rail_targets: Dict[str, float] = {}
 
         self.joint_state_sub = node.create_subscription(
@@ -99,11 +100,15 @@ class JointController:
         self.last_joint_state_wall_time = time.monotonic()
         self.is_connected = False
         self.reconnect_attempts = 0
+        self._joint_state_seq = 0
+        self._last_sync_joint_state_seq = -1
 
         self.joint_command_history: Dict[str, list] = {}
         self.joint_stuck_count: Dict[str, int] = {}
 
         self.rail_slip_counters: Dict[str, int] = {}
+        self._rail_slip_monitoring_enabled = True
+        self._freeze_expected_rail_targets = False
 
         self._load_joint_limits()
 
@@ -144,11 +149,74 @@ class JointController:
             self.joint_limits = {}
             raise
 
+    def sync_rail_targets_from_joint_states(self) -> None:
+        """将导轨滑移监控的期望值对齐到当前关节状态（仿真中立起后常用）。
+
+        避免「命令 rail=0」与「物理平衡位置非零」的长期偏差被误判为滑移。
+        """
+        for leg_num in (1, 2, 3, 4):
+            rail_joint = get_rail_joint_name(leg_num)
+            self.rail_slip_counters[rail_joint] = 0
+            if rail_joint in self.current_joint_states:
+                self.last_rail_targets[rail_joint] = float(
+                    self.current_joint_states[rail_joint]["position"]
+                )
+        self._last_sync_joint_state_seq = self._joint_state_seq
+
+    def disable_rail_slip_monitoring(self, freeze_expected_targets: bool = True, reset_counters: bool = False) -> None:
+        self._rail_slip_monitoring_enabled = False
+        self._freeze_expected_rail_targets = bool(freeze_expected_targets)
+        if reset_counters:
+            for leg_num in (1, 2, 3, 4):
+                self.rail_slip_counters[get_rail_joint_name(leg_num)] = 0
+
+    def enable_rail_slip_monitoring(self, reset_counters: bool = False) -> None:
+        self._rail_slip_monitoring_enabled = True
+        self._freeze_expected_rail_targets = False
+        if reset_counters:
+            for leg_num in (1, 2, 3, 4):
+                self.rail_slip_counters[get_rail_joint_name(leg_num)] = 0
+
+    def has_received_joint_states(self) -> bool:
+        return self._joint_state_seq > 0
+
+    def get_joint_state_seq(self) -> int:
+        return int(self._joint_state_seq)
+
+    @staticmethod
+    def _format_rail_debug_mm(values: Dict[str, float]) -> Dict[str, float]:
+        return {joint: round(float(value) * 1e3, 3) for joint, value in sorted(values.items())}
+
+    def get_rail_debug_snapshot(self) -> Tuple[Dict[str, float], Dict[str, float], Dict[str, int]]:
+        measured = {}
+        expected = {}
+        counters = {}
+        for leg_num in (1, 2, 3, 4):
+            rail_joint = get_rail_joint_name(leg_num)
+            measured[rail_joint] = float(
+                self.current_joint_states.get(rail_joint, {}).get("position", 0.0)
+            )
+            expected[rail_joint] = float(self.last_rail_targets.get(rail_joint, 0.0))
+            counters[rail_joint] = int(self.rail_slip_counters.get(rail_joint, 0))
+        return measured, expected, counters
+
+    def log_rail_debug_snapshot(self, label: str) -> None:
+        measured, expected, counters = self.get_rail_debug_snapshot()
+        self.node.get_logger().info(
+            "Rail debug [%s]: measured_rail=%s expected_rail=%s slip_counter=%s"
+            % (
+                label,
+                self._format_rail_debug_mm(measured),
+                self._format_rail_debug_mm(expected),
+                counters,
+            )
+        )
+
     def reload_joint_limits(self) -> None:
         """从 LEG_PARAMETERS 刷新关节限位映射表。
 
-        当前阶段关节限位的权威来源仍然是 leg_parameters.py 中的 LEG_PARAMETERS；
-        当几何/模型更新后，可调用该方法在不重启节点的情况下刷新 clamp 范围。
+        当前阶段 LEG_PARAMETERS 会由 dog2 xacro/URDF 同步生成；
+        当模型更新后，可调用该方法在不重启节点的情况下刷新 clamp 范围。
         """
         try:
             self._load_joint_limits()
@@ -159,6 +227,7 @@ class JointController:
     def _joint_state_callback(self, msg: JointState) -> None:
         self.last_joint_state_time = self.node.get_clock().now()
         self.last_joint_state_wall_time = time.monotonic()
+        self._joint_state_seq += 1
         
         if not self.is_connected:
             self.is_connected = True
@@ -182,7 +251,9 @@ class JointController:
             rail_target_m = float(joint_positions.get(rail_joint, 0.0))
             rail_target_m = self.check_joint_limits(rail_joint, rail_target_m)
             rail_point.positions.append(rail_target_m)
-            self.last_rail_targets[rail_joint] = rail_target_m
+            self.commanded_rail_targets[rail_joint] = rail_target_m
+            if not self._freeze_expected_rail_targets:
+                self.last_rail_targets[rail_joint] = rail_target_m
             self._record_joint_command(rail_joint, rail_target_m)
 
         rail_point.time_from_start = Duration(
@@ -256,6 +327,8 @@ class JointController:
     def monitor_rail_positions(self) -> bool:
         if not self.rails_enabled:
             return True
+        if not self._rail_slip_monitoring_enabled:
+            return True
 
         all_rails_ok = True
         
@@ -323,7 +396,10 @@ class JointController:
             if rail_joint in self.current_joint_states:
                 measured_pos = self.current_joint_states[rail_joint].get('position', None)
             if measured_pos is None:
-                measured_pos = self.last_rail_targets.get(rail_joint, 0.0)
+                measured_pos = self.commanded_rail_targets.get(
+                    rail_joint,
+                    self.last_rail_targets.get(rail_joint, 0.0),
+                )
             point.positions.append(float(measured_pos))
 
         point.time_from_start = Duration(

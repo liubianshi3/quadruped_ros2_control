@@ -125,6 +125,73 @@ def get_joint_axis(robot: ET.Element, joint_name: str) -> tuple[float, float, fl
     return parse_vec(axis_text)
 
 
+def get_joint_parent(robot: ET.Element, joint_name: str) -> str:
+    parent = get_joint(robot, joint_name).find("parent")
+    if parent is None:
+        fail(f"Joint {joint_name} missing parent")
+    link = parent.attrib.get("link")
+    if not link:
+        fail(f"Joint {joint_name} parent missing link")
+    return link
+
+
+def get_joint_child(robot: ET.Element, joint_name: str) -> str:
+    child = get_joint(robot, joint_name).find("child")
+    if child is None:
+        fail(f"Joint {joint_name} missing child")
+    link = child.attrib.get("link")
+    if not link:
+        fail(f"Joint {joint_name} child missing link")
+    return link
+
+
+def build_parent_joint_map(robot: ET.Element) -> dict[str, str]:
+    mapping: dict[str, str] = {}
+    for joint in robot.findall("./joint"):
+        name = joint.attrib.get("name")
+        child = joint.find("child")
+        child_link = child.attrib.get("link") if child is not None else None
+        if not name or not child_link:
+            continue
+        mapping[child_link] = name
+    return mapping
+
+
+def link_rotation_in_root(
+    robot: ET.Element,
+    parent_joint_map: dict[str, str],
+    link_name: str,
+    root_link: str,
+) -> tuple[tuple[float, ...], ...]:
+    if link_name == root_link:
+        return (
+            (1.0, 0.0, 0.0),
+            (0.0, 1.0, 0.0),
+            (0.0, 0.0, 1.0),
+        )
+    parent_joint_name = parent_joint_map.get(link_name)
+    if parent_joint_name is None:
+        fail(f"Link {link_name} is disconnected from root {root_link}")
+    parent_link = get_joint_parent(robot, parent_joint_name)
+    return mat_mul(
+        link_rotation_in_root(robot, parent_joint_map, parent_link, root_link),
+        rpy_matrix(get_joint_rpy(robot, parent_joint_name)),
+    )
+
+
+def joint_rotation_in_root(
+    robot: ET.Element,
+    parent_joint_map: dict[str, str],
+    joint_name: str,
+    root_link: str,
+) -> tuple[tuple[float, ...], ...]:
+    parent_link = get_joint_parent(robot, joint_name)
+    return mat_mul(
+        link_rotation_in_root(robot, parent_joint_map, parent_link, root_link),
+        rpy_matrix(get_joint_rpy(robot, joint_name)),
+    )
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Validate dog2 joint semantic directions")
     parser.add_argument(
@@ -142,6 +209,7 @@ def main() -> int:
     urdf_path = run_xacro_to_urdf(xacro_path)
     try:
         root = ET.parse(urdf_path).getroot()
+        parent_joint_map = build_parent_joint_map(root)
 
         prefixes = ("lf", "lh", "rh", "rf")
         rail_expected = (1.0, 0.0, 0.0)
@@ -149,38 +217,22 @@ def main() -> int:
         pitch_expected = (0.0, -1.0, 0.0)
 
         for prefix in prefixes:
-            rail_parent = get_joint_parent(root, f"{prefix}_rail_joint")
-            mount_joint = f"{prefix}_leg_mount_fixed"
-            if rail_parent == f"{prefix}_leg_mount":
-                mount_r = rpy_matrix(get_joint_rpy(root, mount_joint))
-            elif rail_parent == "base_link":
-                mount_r = (
-                    (1.0, 0.0, 0.0),
-                    (0.0, 1.0, 0.0),
-                    (0.0, 0.0, 1.0),
-                )
-            else:
-                fail(
-                    f"{prefix}_rail_joint unexpected parent: expected {prefix}_leg_mount "
-                    f"or base_link, got={rail_parent}"
-                )
-
-            rail_r = mat_mul(mount_r, rpy_matrix(get_joint_rpy(root, f"{prefix}_rail_joint")))
+            rail_r = joint_rotation_in_root(root, parent_joint_map, f"{prefix}_rail_joint", "base_link")
             rail_axis_base = mat_vec(rail_r, get_joint_axis(root, f"{prefix}_rail_joint"))
             if not is_close_vec(rail_axis_base, rail_expected):
                 fail(f"{prefix}_rail_joint semantic axis mismatch: expected={rail_expected}, got={rail_axis_base}")
 
-            coxa_r = mat_mul(rail_r, rpy_matrix(get_joint_rpy(root, f"{prefix}_coxa_joint")))
+            coxa_r = joint_rotation_in_root(root, parent_joint_map, f"{prefix}_coxa_joint", "base_link")
             coxa_axis_base = mat_vec(coxa_r, get_joint_axis(root, f"{prefix}_coxa_joint"))
             if not is_close_vec(coxa_axis_base, coxa_expected):
                 fail(f"{prefix}_coxa_joint semantic axis mismatch: expected={coxa_expected}, got={coxa_axis_base}")
 
-            femur_r = mat_mul(coxa_r, rpy_matrix(get_joint_rpy(root, f"{prefix}_femur_joint")))
+            femur_r = joint_rotation_in_root(root, parent_joint_map, f"{prefix}_femur_joint", "base_link")
             femur_axis_base = mat_vec(femur_r, get_joint_axis(root, f"{prefix}_femur_joint"))
             if not is_close_vec(femur_axis_base, pitch_expected):
                 fail(f"{prefix}_femur_joint semantic axis mismatch: expected={pitch_expected}, got={femur_axis_base}")
 
-            tibia_r = mat_mul(femur_r, rpy_matrix(get_joint_rpy(root, f"{prefix}_tibia_joint")))
+            tibia_r = joint_rotation_in_root(root, parent_joint_map, f"{prefix}_tibia_joint", "base_link")
             tibia_axis_base = mat_vec(tibia_r, get_joint_axis(root, f"{prefix}_tibia_joint"))
             if not is_close_vec(tibia_axis_base, pitch_expected):
                 fail(f"{prefix}_tibia_joint semantic axis mismatch: expected={pitch_expected}, got={tibia_axis_base}")

@@ -1,5 +1,203 @@
 # DEVELOPMENT_LOG
 
+## 2026-04-12 20:03 URDF/xacro 文档与腿链分层：关节语义、惯性注释、Phase 1 几何下沉与 Phase 2 回滚
+
+- **dog2_description / `dog2.urdf.xacro`**
+  - 文件头：修正与 `l1`–`l4` `slider_inertia_xyz` 实际符号不一致的旧注释（惯性 COM 偏移说明改为与属性一致）。
+  - 关节限位：`femur_*` / `tibia_*` 与阻尼/摩擦命名拆分（避免两个转动副共名 `knee_*`）；`foot_tip` 与 `tibia_link` Gazebo 前注释改为「mesh 碰撞体」口径，去掉易误导的「原语」表述。
+  - **`base_link` inertial**：为 `rpy="${half_pi} 0 0"` 增加 **FROZEN** 维护注释（CAD→REP-103 映射、主惯量直觉、`ixy` 含义；禁止为美观随意改）。
+  - **Leg kinematic contract**：名义姿态下在 `base_link` 的带符号语义轴写清（rail **+X**，coxa **−Z**，femur/tibia **−Y**）；与 `dog2_motion_control/dog2_motion_control/joint_semantics.py` 的说明对齐。
+  - **安装层 / 语义链 / 几何层**：在 `Leg instantiations` 与 `leg_knee_xyz_R` 后增加 Phase 0/2 分层与调查顺序注释。
+  - **Phase 1（仅 `rf`）**：`thigh_rpy` / `thigh_col_rpy` 从实例参数下沉为 **`femur_link` 的 visual/collision `<origin rpy>`**（`prefix=='rf'` 分支），实例层不再传；不增加 `*_geom_fixed`。
+  - **Phase 2（数值吸收 `leg_hip_rpy_R`）**：曾将 **`rh` / `rf`** 改为 `leg_mount` **L** + `leg_rail_axis_L` + 默认 coxa `rpy` + Pinocchio **平移**闭合的 `*_hip_xyz_closure`；验证发现 **未约束 `coxa_link` 完整 SE(3)**，与「仅闭足端/平移」不等价。
+  - **回滚**：**`rh` 与 `rf` 的 Phase 2 mount 吸收均已撤销**，恢复 `leg_rail_rpy_R`、`leg_rail_axis_R`、`leg_hip_rpy_R`、`leg_knee_xyz_R`；`rf` 恢复显式 `hip_xyz="0.0116 0.0199 0.055"`；删除 `rh_hip_xyz_closure` / `rf_hip_xyz_closure` 属性。**Phase 1 的 `rf` 大腿 mesh/collision flip 保留**。
+
+- **dog2_motion_control**
+  - `joint_semantics.py`：与 xacro 腿运动学合同一致的带符号语义轴表述；`leg_parameters.py`：`rh` / `rf` 的 `hip_offset` 与回滚后 URDF 一致（`rh` 宏默认 `hip_xyz`；`rf` 与显式 `0.0116 0.0199 0.055` 对齐）。
+
+- **验证（回滚后稳态）**
+  - `python3 src/dog2_description/scripts/check_joint_semantics.py`：PASS  
+  - `pytest src/dog2_motion_control/test/test_kinematics.py`（18 项）：PASS  
+
+- **后续方向（已写入 xacro 注释）**
+  - 不再单独用「平移闭合」重做 `leg_hip_rpy_R` 吸收；下一轮以 **`coxa`/`femur`/`tibia` 等完整 SE(3)** 为约束，或走 **axis_frame 显式化** 模板腿。
+
+## 2026-04-12 16:38 semantic `base_link` 落盘 + legacy `urdf_shift` 收口 + 运行时模型混载定位
+
+- **本轮目标与决策**
+  - 目标不是“把 `base_offset_joint` 机械清零”，而是**保住新的 semantic `base_link` 语义**，同时把历史 `urdf_shift_*` 从源码层彻底拿掉。
+  - 经几何推导确认：若强行将 `base_offset_joint` 直接改成 identity，并把整层变换完整吸收到 `base_link` 子节点中，四个 `leg_mount` 的几何中心会整体漂到 `(0.2492, 0.12503, -0.2649)`，等于把刚完成的 semantic `base_link` 主根语义重新打回旧 `base_footprint` 体系。
+  - 因此本轮明确采用：**保住 semantic `base_link`，删除 `urdf_shift_*`，但保留非 identity 的 `base_offset_joint` 作为显式 `base_footprint -> semantic base_link` 放置。**
+
+- **里程碑提交 1：semantic `base_link` 正式重定义**
+  - 提交：`e2c184e` `Redefine semantic base_link in dog2 URDF`
+  - 主要工作：
+    - `src/dog2_description/urdf/dog2.urdf.xacro`
+      - 定义 semantic `base_link` 原点：`(0.248975, 0.122500, 0.0)`。
+      - `base_link_cad_fixed` 从 identity 改为非 identity，表达 CAD 壳层相对 semantic trunk root 的固定偏移。
+      - 四个 `*_leg_mount_fixed`、trunk inertial、trunk box collision 全部围绕新的 semantic `base_link` 重标。
+      - `base_link` 语义正式收口为 trunk inertial + trunk primitive collision + leg mounts；`base_link_cad` 收口为 visual-only。
+    - `src/dog2_description/scripts/check_urdf_shift_boundary.py`
+      - guardrail 升级到 semantic base 语义，检查新的 inertial / collision / shell offset / leg_mount 坐标。
+    - `src/dog2_description/scripts/check_joint_semantics.py`
+      - joint 语义检查补上 `leg_mount` 新拓扑。
+    - `src/dog2_description/scripts/verify_stage2_rail_geometry.py`
+      - Stage 2 golden 随 semantic base 语义重基线，rail parent 以 `*_leg_mount` 为准。
+    - 文档同步：
+      - `src/dog2_description/README_JOINT_LIMITS.md`
+      - `src/dog2_description/doc/base_frame_migration.txt`
+      - `src/dog2_description/GAZEBO_CONTROL_FIX.md`
+    - 删除仓库中 stale 的 `src/dog2_description/urdf/dog2.urdf`，明确 xacro 为单一真源。
+
+- **里程碑提交 2：移除 legacy `urdf_shift_*` bookkeeping**
+  - 提交：`a19268c` `Remove legacy urdf_shift bookkeeping`
+  - 主要工作：
+    - `src/dog2_description/urdf/dog2.urdf.xacro`
+      - 删除 `urdf_shift_x / urdf_shift_y / urdf_shift_z` 属性。
+      - 将 `base_offset_joint` 改写为**显式常量**：
+        - `xyz = (0.2492, 0.12503, -0.2649)`
+        - `rpy = (0, 0, pi)`
+      - 明确说明：`base_offset_joint` 名字保留仅为兼容，不再代表隐式 CAD 补偿层。
+    - `src/dog2_description/scripts/check_urdf_shift_boundary.py`
+      - 增加检查：`base_offset_joint` 必须匹配显式常量。
+      - 增加检查：xacro 源中**不允许**再出现真实的 `urdf_shift_*` 属性或表达式（注释文字不算）。
+    - 文档同步：
+      - `src/dog2_description/README_JOINT_LIMITS.md`
+      - `src/dog2_description/doc/base_frame_migration.txt`
+      - `read.md`
+
+- **验证结果（本轮全部通过）**
+  - `python3 src/dog2_description/scripts/check_urdf_shift_boundary.py --strict src/dog2_description/urdf/dog2.urdf.xacro`：PASS
+  - `python3 src/dog2_description/scripts/check_joint_semantics.py src/dog2_description/urdf/dog2.urdf.xacro`：PASS
+  - `python3 src/dog2_description/scripts/verify_stage2_rail_geometry.py --xacro src/dog2_description/urdf/dog2.urdf.xacro --golden src/dog2_description/config/migration_stage2_stand.json`：PASS
+  - `colcon build --packages-select dog2_description --symlink-install`：PASS
+  - 导出展开 URDF 核对：
+    - `base_offset_joint = (0.2492, 0.12503, -0.2649), rpy=(0,0,pi)`
+    - `base_link_cad_fixed = (-0.248975, -0.1225, 0.0), rpy=(0,0,0)`
+
+- **运行时异常排查：定位为“源码已更新，但运行态混入旧模型/旧环境”**
+  - 现象：
+    - RViz 中 `base_link` / `base_link_cad` 仍重合。
+    - `ros2 param get /robot_state_publisher robot_description` 导出的运行时 URDF 仍显示：
+      - `base_link_cad_fixed = identity`
+      - 注释仍是旧的 Stage 3 语义。
+  - 本地源码导出的期望 URDF 则明确为：
+    - `base_link_cad_fixed xyz="-0.248975 -0.1225 0.0"`
+  - 进一步排查发现：
+    - 当前 shell 正确 source 到主工作区：`/home/dell/aperfect/carbot_ws/install/dog2_description`
+    - 但正在运行的 `rviz2` 使用的是 cleanup worktree 的 RViz 配置：
+      - `/home/dell/aperfect/carbot_ws_leg_mount_cleanup/install/dog2_description/share/dog2_description/rviz/dog2.rviz`
+  - 结论：
+    - **问题不是源码回退，而是运行时混入了旧 `robot_description` / 旧进程 / 多 workspace 痕迹。**
+    - 因此运行时看到的 `base_link` / `base_link_cad` 重合，不能作为当前主工作区 URDF 语义未生效的证据。
+
+- **当前语义稳态（截至本条日志）**
+  - `base_link`
+    - semantic trunk root
+    - trunk inertial
+    - trunk primitive collision
+    - all four `*_leg_mount`
+  - `base_link_cad`
+    - visual shell only
+  - `base_link_cad_fixed`
+    - non-identity fixed shell offset
+  - `base_offset_joint`
+    - 显式 `base_footprint -> semantic base_link` 放置
+    - 非 identity 是**有意保留**，不是遗留 bug
+  - `urdf_shift_*`
+    - 已从 xacro 源移除
+
+- **备注**
+  - 本轮只提交了 `dog2_description` / 文档相关变更，**未混入** `dog2_motion_control` 工作树中尚未收口的 Gazebo / controller / rail slip 改动。
+
+## 2026-04-11 22:00 URDF「坐标净化」：问题分层、迁移阶段、可验证性与当前稳态
+
+系统记录本次在 URDF 侧做的**语义拆分与逐层归位**（非单纯改 `xyz` 好看），便于后续文档/汇报引用。
+
+### 一、一开始到底在净化什么
+
+要净化的不是几个 `xyz`，而是把原来**缠在一起的三类语义拆开**：
+
+1. **控制/运动学语义**：控制器、Pinocchio、腿根安装、足端解算以哪个 frame 为根。  
+2. **CAD/外观语义**：mesh 导出的大偏移、壳体朝向、视觉装配。  
+3. **动力学/碰撞语义**：inertial、collision 挂在哪个 link，谁才是「机身」。
+
+原问题不是「模型全错」，而是三类语义混在一起，导致：`base_link` 名像主机身却不是；`base_link_cad` 像壳层却扛 inertial/collision；腿已参考 `base_link` 但 trunk 物理体未完全迁过来；CAD 偏移仍存在又不能到处乱补。
+
+**坐标净化本质**：把历史 CAD 偏移、控制主根、动力学主根**拆开并重新归位**。
+
+### 二、总体策略：先分层，不硬删偏移
+
+不一上来删 CAD 偏移（会牵动 footprint→base、trunk、四腿、Python、站姿、Gazebo）。采用：
+
+**先搭双基准脚手架，再逐层把语义迁回 `base_link`。**
+
+- `base_footprint`：地面投影 / 规划语义  
+- `base_link`：未来的控制/运动学/动力学主根  
+- `base_link_cad`：暂存 CAD 壳层与历史 mesh 装配  
+
+即**建新结构再搬运**，不是硬删旧世界。
+
+### 三、第一层：`urdf_shift` 封边
+
+不把 `urdf_shift_*` 立刻删掉，而是**只允许出现在 `base_offset_joint`**，禁止在 TF、Python、外参、控制器里二次补偿，避免「双重补偿」。  
+目标：偏移仍是历史包袱，但**变成单层、可控**。
+
+### 四、第二层：`base_link` / `base_link_cad` 双层脚手架
+
+- `base_link`：未来主语义 frame  
+- `base_link_cad`：CAD trunk 承载层  
+- `base_link_cad_fixed`：两者之间固定连接（早期 **identity**，世界几何先不变）  
+
+早期 `base_link` 仍是轻量占位根，真实 trunk inertial/visual/collision 仍在 `base_link_cad`。  
+**成果**：控制根与 CAD 壳层在**结构上**首次分离。
+
+### 五、第三层（Stage 2）：腿安装语义迁回 `base_link`
+
+四条 `*_rail_joint` 的 **parent 统一为 `base_link`**；**rail 的 `xyz/rpy` 数值先不动**（当时 `base_link_cad_fixed` 为 identity）。  
+**效果**：世界系腿几何基本不变，腿安装语义正式认 **`base_link-local`**。  
+净化掉「腿挂在谁身上」；FK/IK、Pinocchio、`leg_parameters`、nominal、左右镜像均可围绕单一腿根收口。
+
+### 六、第四层（Stage 3A）：trunk inertial 迁到 `base_link`
+
+把 `base_link_cad` 上真实 trunk inertial 迁到 `base_link`，去掉 `base_link` 占位 inertial。  
+identity 阶段无需换系与惯量主轴旋转。  
+**净化**：「谁才是动力学主机身」——至少 inertial 层 `base_link` 名副其实。
+
+### 七、第五层（Stage 3B）与当前停靠点
+
+方向：trunk collision 从 `base_link_cad` 挪到 `base_link`，`base_link_cad` 退为 visual-only（`base_link` = inertial + collision，`base_link_cad` = visual-only）。  
+
+与 Gazebo 启动链、控制、rail 监控等问题交织后曾**回退以排查**，故**稳态叙述**：inertial 已在 `base_link`；**collision 归属与 3B 为正确方向，但当前稳定参考仍以 3A 为主**（3B 非当前强制停靠点）。
+
+### 八、配套：把净化结果变成可验证
+
+- **导出展开 URDF**：脚本支持 xacro→展开，对齐「源码以为」与「Gazebo/Pinocchio 真吃到」。  
+- **Stage 2 几何校验**：golden + 脚本锁定 stand 下 hip/foot 世界坐标、rail parent 是否为 `base_link`。  
+- **`check_urdf_shift_boundary.py` 升级**：校验 `base_offset_joint` 边界、`base_link` 承载 trunk inertial、`base_link_cad` 不再承载 inertial、rail parent 等——**规则可执行化**。
+
+### 九、当前「净化后」稳态（简述）
+
+**已净化**：CAD 偏移封在 `base_offset_joint`；双 base 已建立；腿语义在 `base_link`；trunk inertial 在 `base_link`；`base_link` 明确为未来主根。  
+
+**未彻底完成**：`base_link_cad` 仍扛 visual；collision 最终归属与 Gazebo 链仍在收口；`base_link_cad_fixed` 仍为 identity；最外层 `urdf_shift_*` 尚未删除。  
+
+工作**未完成但关键一半已扶正**：主语义清晰、历史包袱隔离，后续可低风险继续收 collision 与 offset。
+
+### 十、意义（四条）
+
+1. **控制根扶正**：base frame、腿基座、Pinocchio root、gait body frame 可统一围绕 `base_link`。  
+2. **历史偏移封边**：不再是无处不在的幽灵变量。  
+3. **腿/机身语义分离**：安装、惯性、CAD visual 分层清晰。  
+4. **删 CAD 偏移有路径**：先主根、再 collision、最后 `base_offset_joint` 与 mesh 原点。
+
+### 十一、一句话总结
+
+**不是粗暴删掉 CAD 偏移，而是先把控制根、腿安装根、动力学根、CAD 壳层拆开，再逐层把应属于 `base_link` 的迁回 `base_link`。**  
+核心成果：模型从「历史补丁拼起的 URDF」转向**语义清楚、可继续演进**的 URDF。
+
+---
+
 ## 2026-04-07 21:52 rail 符号/足端帧/限位语义统一 + 回归测试闭环（Position ↔ IK ↔ MPC/WBC）
 
 - **结论（最重要）**
@@ -1019,6 +1217,30 @@ ros2 run dog2_motion_control obstacle_analysis \
 
 ---
 
+## 2026-04-11 17:20 base 迁移阶段 2 收口 + 碰撞模型回退（胫骨 / 机身）
+
+- **base frame 迁移（Stage 1–2，摘要）**
+  - `base_footprint` → `base_offset_joint` → `base_link`（控制 / Pinocchio 根，占位惯量）→ `base_link_cad_fixed`（单位）→ `base_link_cad`（机身质量 / 视觉 / 碰撞）。
+  - 四条 `*_rail_joint` 的 **parent = `base_link`**；rail `xyz` 未改（`base_link_cad_fixed` 为单位时世界几何与挂 `base_link_cad` 时一致）。
+  - `leg_parameters.py`：rh/rf `base_position.y` 与 URDF 对齐为 `0.1825`；注释统一为 base_link-local。
+
+- **验收与工具**
+  - `config/migration_stage2_stand.json`：canonical stand（freeflyer + 各腿 rail=0 + 站立角）下 **`{leg}_coxa_link`（hip）与 `{leg}_foot_link`（足）世界坐标** golden，`tol_m=1e-5`。
+  - `scripts/verify_stage2_rail_geometry.py`：`ros2 run` / CMake `dog2_stage2_rail_geometry_check`；`--write-golden` 可重写 golden。
+  - `scripts/export_dog2_urdf.py`：展开 xacro 供基线导出。
+  - `check_urdf_shift_boundary.py`：校验 `base_link_cad` 视觉/惯量原点与 `base_link_cad_fixed` 身份。
+
+- **测试与已知项**
+  - `test/test_kinematics.py`：`TestRailLocking` / Hypothesis 属性测试耗时与边界条件已收紧；**18 passed**。
+  - `test_kinematics_consistency.py`：足端对齐段增加 **`[KNOWN_PRE_STAGE2]`**，将 lf/lh 历史 FK vs Pinocchio 偏差与 Stage2 rail 迁移因果区分；进程仍 **exit 0**。
+
+- **碰撞模型（撤销 box 原语，恢复 mesh）**
+  - **`tibia_link`**：去掉 AABB `box`、`tibia_col_xyz` 与 L/R 常量；恢复 **`meshes/collision/l${leg_num}111_collision.STL`**。
+  - **`base_link_cad` 机身碰撞**：去掉 `base_collision_box_size/xyz`；恢复与 visual 同原点的 **`base_link.STL`** mesh（`origin xyz="-0.9780 0.87203 -0.2649"`）。
+
+- **备注**
+  - Stage2 golden 仅依赖运动学；上述碰撞回退 **无需** 重算 golden；`verify_stage2_rail_geometry.py` 与 `check_urdf_shift_boundary.py --strict` 经验证仍 PASS。
+
 ## 2026-04-11 16:31 Cursor 对话归档：足端闭环、原语碰撞、MPC 接触桥接、控制接口（本对话）
 
 - **足端 `foot_fixed` / `foot_tip` 与 Python 对齐**
@@ -1049,7 +1271,7 @@ ros2 run dog2_motion_control obstacle_analysis \
   - Gazebo 摩擦/接触刚度（`mu1/mu2/kp/kd/minDepth/maxVel`）挂在 **`foot_link`**，已从 `tibia_link` 迁走；胫骨另设低摩擦/低刚度以防蹭地抢接触。
   - 各腿 `foot_link` Gazebo 内增加 **`contact` sensor**（`<contact/>` 监测该 link 全部碰撞），供仿真触地反馈。
 
-- **原语碰撞（数值稳定性）**
+- **原语碰撞（数值稳定性）**（*注：机身 / 胫骨 box 已于 **2026-04-11 17:20** 回退为 mesh，见上条日志。*）
   - `base_link`：`mesh` 碰撞改为与 base STL **AABB 对齐** 的 `box`。
   - `tibia_link`：胫骨碰撞 STL 改为 **AABB 对齐** 的 `box`，左右腿 `tibia_col_xyz` 分 L/R 常量传入宏。
 
@@ -1069,3 +1291,146 @@ ros2 run dog2_motion_control obstacle_analysis \
 
 - **Git 存档（同次提交）**
   - 标签建议：`archive/2026-04-11-1631`；可选 `git archive` 生成 `carbot_ws-archive-20260411-1631.tar.gz` 供离线快照。
+
+## 2026-04-11 20:22 trunk 迁移 Stage 3A / 3B（本对话）
+
+- **Stage 3A：trunk inertial 迁移到 `base_link`**
+  - `src/dog2_description/urdf/dog2.urdf.xacro`
+    - `base_link`：用真实 trunk inertial 替换占位惯量，`origin xyz="0.2492 0.12503 0.0" rpy="${half_pi} 0 0"`，`mass=6.0`。
+    - `base_link_cad`：删除 inertial，保留 visual + collision。
+    - `base_link_cad_fixed`：保持 identity，不改 `xyz/rpy`。
+  - 说明注释同步为 Stage 3A 语义：`base_link = trunk inertial carrier`，`base_link_cad = CAD visual/collision carrier`。
+  - 该步对应独立提交：`a9eeb58` (`dog2_description: update xacro trunk scaffold`)。
+
+- **Stage 3B：trunk collision 迁移到 `base_link`**
+  - `src/dog2_description/urdf/dog2.urdf.xacro`
+    - `base_link`：新增 trunk collision，几何保持与原 `base_link_cad` 完全等价：
+      - `origin xyz="-0.9780 0.87203 -0.2649" rpy="0 0 0"`
+      - `mesh filename="package://dog2_description/meshes/base_link.STL"`
+    - `base_link_cad`：删除 collision，退为 **visual-only**。
+    - `base_link_cad_fixed`：仍保持 identity，未改世界几何。
+  - 说明注释同步为 Stage 3B 语义：`base_link = trunk inertial + collision`，`base_link_cad = CAD visual carrier`。
+
+- **边界检查脚本升级到 Stage 3B**
+  - `src/dog2_description/scripts/check_urdf_shift_boundary.py`
+    - 旧假设：`base_link_cad` 挂 inertial / collision。
+    - 新假设：
+      - `base_offset_joint` 位姿必须保持补偿边界：
+        - `xyz = (0.2492, 0.12503, -0.2649)`
+        - `rpy = (0, 0, pi)`
+      - `base_link` 必须有 trunk inertial
+      - `base_link` 必须有 trunk collision
+      - `base_link_cad` 只允许 visual，不再有 inertial / collision
+      - `base_link_cad_fixed` 必须保持 identity
+      - 四条 `*_rail_joint` 的 parent 必须仍为 `base_link`
+
+- **验证结果**
+  - `colcon build --packages-select dog2_description --symlink-install`：PASS
+  - xacro 展开检查：
+    - `base_link has_collision=True has_visual=False has_inertial=True`
+    - `base_link_cad has_collision=False has_visual=True has_inertial=False`
+  - `python3 src/dog2_description/scripts/check_urdf_shift_boundary.py ...`：PASS
+  - `python3 src/dog2_description/scripts/check_joint_semantics.py ...`：PASS
+  - `python3 src/dog2_description/scripts/verify_stage2_rail_geometry.py --xacro ... --golden ...`：PASS
+    - `all *_rail_joint parents are base_link`
+    - `stand pose hip/foot world match golden (tol=1e-05 m)`
+  - `python3 -m pytest src/dog2_motion_control/test/test_kinematics.py -q`：**18 passed**
+
+- **当前 trunk 语义状态**
+  - `base_link`：控制 / odom / Pinocchio 主 frame，承载 trunk inertial + trunk collision。
+  - `base_link_cad`：CAD 壳体 visual-only。
+  - `base_link_cad_fixed`：identity scaffold，尚未进入去偏移阶段。
+
+- **后续建议**
+  - 下一步优先补一轮 RViz / Gazebo 运行时目检：
+    - RViz `Collision Enabled` 下确认 trunk collision 不跳位
+    - Gazebo 确认 spawn 高度、蹭地与主接触行为无异常
+  - 等 Stage 3B 运行时验证通过后，再单独考虑：
+    - `base_link_cad = visual-only` 的文档收口
+    - trunk collision mesh → primitive box / 多 box
+    - 最后才触及 `urdf_shift_*` / `base_offset_joint` / `base_link_cad_fixed`
+
+## 2026-04-12 20:03 语义根收口 + 限位单一真值 + 注释终态化（本对话）
+
+- **URDF 根语义收口（删除假 footprint）**
+  - `src/dog2_description/urdf/dog2.urdf.xacro`
+    - 删除 `base_footprint` 与 `base_offset_joint`，`base_link` 成为唯一 URDF 根。
+    - 明确口径：若未来需要真实 `base_footprint`（ground projection / planning），由运行时 TF 发布，不在 URDF 内伪造。
+  - `src/dog2_description/scripts/check_urdf_shift_boundary.py`
+    - 新增唯一根检查：root 必须且仅能是 `base_link`。
+    - 将 `base_footprint` / `base_offset_joint` 设为禁止回流项（forbidden link/joint）。
+
+- **移除 `base_link_cad` 包装层（方案 B 落地）**
+  - `src/dog2_description/urdf/dog2.urdf.xacro`
+    - 删除 `base_link_cad` 与 `base_link_cad_fixed`。
+    - trunk visual 直接并入 `base_link`；mesh 文件保持不动，仅把两层历史偏移合并到 `base_link` 的 `visual origin`。
+  - `src/dog2_description/scripts/check_urdf_shift_boundary.py`
+    - 边界检查改为：`base_link` 同时承载 trunk inertial + collision + visual。
+    - 禁止 `base_link_cad` / `base_link_cad_fixed` 回流。
+
+- **关节限位收口为单一真值源（URDF）**
+  - `src/dog2_description/urdf/dog2.urdf.xacro`
+    - 旋转关节限位拆分为 `coxa` / `femur` / `tibia` 三组独立属性，不再用统一 `hip/knee` 复用。
+    - 当前统一大限位：`coxa [-2.618, 2.618]`，`femur [-2.8, 2.8]`，`tibia [-2.8, 2.8]`。
+  - `src/dog2_motion_control/dog2_motion_control/urdf_joint_limits.py`（新增）
+    - 运行时从 `dog2.urdf.xacro` 展开并解析关节限位。
+  - `src/dog2_motion_control/dog2_motion_control/leg_parameters.py`
+    - `joint_limits` 改为从 URDF 解析结果注入。
+  - `src/dog2_motion_control/dog2_motion_control/spider_robot_controller.py`
+    - 去除用 YAML 覆盖旋转关节限位的路径，避免出现“URDF 一套、控制器一套”。
+  - `src/dog2_motion_control/config/gait_params*.yaml`
+    - 移除 `haa/hfe/kfe` 旋转限位字段，仅保留 rail 相关兼容项。
+  - `src/dog2_motion_control/test/test_urdf_joint_limits_sync.py`（新增）
+    - 新增同步回归：保证控制侧读取限位与 URDF 一致。
+
+- **文档与注释终态化**
+  - `src/dog2_description/README_JOINT_LIMITS.md`
+  - `src/dog2_description/doc/base_frame_migration.txt`
+  - `src/dog2_description/urdf/dog2.urdf.xacro`
+    - 去除 `Dual-base scaffold` / `Stage 4` 等过渡期表述，改为当前职责说明。
+    - `foot_tip` 注释改为当前几何定义口径，不再使用“回退前工作区基准”语气。
+    - `base_link` inertial `rpy="${half_pi} 0 0"` 的语义注明为冻结映射项（有新证据前不改）。
+
+- **验证（本轮执行）**
+  - `python3 src/dog2_description/scripts/check_urdf_shift_boundary.py --strict`：PASS
+  - `python3 src/dog2_description/scripts/check_joint_semantics.py src/dog2_description/urdf/dog2.urdf.xacro`：PASS
+  - `python3 -m py_compile ...`：PASS
+  - `python3 -m pytest src/dog2_motion_control/test/test_urdf_joint_limits_sync.py src/dog2_motion_control/test/test_joint_controller.py src/dog2_motion_control/test/test_kinematics.py -q`：`28 passed`
+
+## 2026-04-12 21:52 关节轴显式化收尾（四腿模板统一）
+
+- **范围与目标**
+  - 目标：把四条腿都收敛到同一显式轴语义模板，消除“`axis=-X` + 多层 `rpy` 隐式拧轴”的可维护性风险。
+  - 约束：本轮只做关节轴显式化，不触碰 trunk、`leg_hip_rpy_R` / `leg_knee_xyz_R`、`lh/rf hip_xyz`、`rf` mesh flip 的历史归因。
+
+- **URDF 主改动（`src/dog2_description/urdf/dog2.urdf.xacro`）**
+  - 为 `lf/lh/rh/rf` 统一引入三段固定对齐层：
+    - `*_coxa_axis_frame -> *_coxa_joint -> *_coxa_drive_frame -> *_coxa_pose_fixed`
+    - `*_femur_axis_frame -> *_femur_joint -> *_femur_drive_frame -> *_femur_pose_fixed`
+    - `*_tibia_axis_frame -> *_tibia_joint -> *_tibia_drive_frame -> *_tibia_pose_fixed`
+  - 关节轴显式语义统一为：
+    - `coxa_joint axis="0 0 -1"`
+    - `femur_joint axis="0 -1 0"`
+    - `tibia_joint axis="0 -1 0"`
+  - `rf` 在本轮完成 `coxa -> femur -> tibia` 三层收尾后，四条腿模板一致。
+
+- **检查与回归护栏**
+  - `src/dog2_description/scripts/check_joint_semantics.py`
+    - 语义检查改为沿固定链追 joint frame，不再依赖“单层 origin rpy”假设，可正确覆盖 axis-frame/pose-fixed 结构。
+  - `src/dog2_motion_control/test/test_lf_zero_pose_se3.py`（新增）
+    - 新增并扩展四腿 `q=0` SE(3) 回归：
+      - `*_coxa_link`, `*_femur_link`, `*_tibia_link`, `*_foot_link`
+      - 同时比较平移与旋转，避免“仅 foot 不漂”的假通过。
+
+- **本轮验证**
+  - `python3 src/dog2_description/scripts/check_joint_semantics.py src/dog2_description/urdf/dog2.urdf.xacro`：PASS
+  - `python3 src/dog2_description/scripts/check_urdf_shift_boundary.py --strict`：PASS
+  - `python3 -m pytest src/dog2_motion_control/test/test_lf_zero_pose_se3.py -q`：`4 passed`
+  - `python3 -m pytest src/dog2_motion_control/test/test_kinematics.py -q`：`18 passed`
+
+- **阶段结论**
+  - 四条腿关节轴语义模板化已完成，当前进入“历史量归因”阶段：
+    - `leg_hip_rpy_R`
+    - `leg_knee_xyz_R`
+    - `lh/rf hip_xyz`
+    - `rf` mesh flip（继续保持在几何层，不回流到关节语义层）

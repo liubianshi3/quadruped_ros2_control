@@ -45,15 +45,6 @@ joint_limits:
   rail:
     min: -0.05
     max: 0.05
-  haa:
-    min: -0.785
-    max: 0.785
-  hfe:
-    min: -1.57
-    max: 1.57
-  kfe:
-    min: -2.356
-    max: 0.0
 
 control:
   frequency: 50.0
@@ -98,15 +89,6 @@ joint_limits:
   rail:
     min: -0.05
     max: 0.05
-  haa:
-    min: -0.785
-    max: 0.785
-  hfe:
-    min: -1.57
-    max: 1.57
-  kfe:
-    min: -2.356
-    max: 0.0
 
 control:
   frequency: 50.0
@@ -147,15 +129,6 @@ joint_limits:
   rail:
     min: -0.05
     max: 0.05
-  haa:
-    min: -0.785
-    max: 0.785
-  hfe:
-    min: -1.57
-    max: 1.57
-  kfe:
-    min: -2.356
-    max: 0.0
 
 control:
   frequency: 50.0
@@ -223,12 +196,9 @@ gait:
         joint_limits = loader.get_joint_limits()
         
         assert 'rail' in joint_limits
-        assert 'haa' in joint_limits
-        assert 'hfe' in joint_limits
-        assert 'kfe' in joint_limits
         
         # 验证每个关节都有min和max
-        for joint in ['rail', 'haa', 'hfe', 'kfe']:
+        for joint in ['rail']:
             assert 'min' in joint_limits[joint]
             assert 'max' in joint_limits[joint]
             assert joint_limits[joint]['min'] < joint_limits[joint]['max']

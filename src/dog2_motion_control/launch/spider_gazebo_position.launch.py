@@ -6,6 +6,7 @@ Dog2 position-mode + Gazebo 完整仿真启动（双路架构中的 position 分
 """
 
 import os
+import xml.etree.ElementTree as ET
 
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
@@ -14,7 +15,6 @@ from launch.actions import (
     IncludeLaunchDescription,
     SetEnvironmentVariable,
     RegisterEventHandler,
-    TimerAction,
     OpaqueFunction,
 )
 from launch.event_handlers import OnProcessExit
@@ -24,6 +24,25 @@ from launch_ros.actions import Node
 from launch_ros.substitutions import FindPackageShare
 from launch.conditions import IfCondition, UnlessCondition
 import xacro
+
+
+def _resolve_world_name(world_path: str) -> str:
+    world_path = str(world_path).strip()
+    if world_path and os.path.isfile(world_path):
+        try:
+            root = ET.parse(world_path).getroot()
+            world_elem = root.find("world")
+            if world_elem is not None and world_elem.get("name"):
+                return str(world_elem.get("name"))
+        except Exception:
+            pass
+
+    if world_path:
+        world_stem = os.path.splitext(os.path.basename(world_path))[0].strip()
+        if world_stem:
+            return world_stem
+
+    return "empty"
 
 
 def generate_launch_description():
@@ -72,6 +91,8 @@ def generate_launch_description():
     def launch_setup(context):
         controllers_yaml = os.path.join(pkg_dog2_description, "config", "ros2_controllers.yaml")
         mass_scale = LaunchConfiguration("mass_scale").perform(context)
+        world_path = LaunchConfiguration("world").perform(context)
+        world_name = _resolve_world_name(world_path)
 
         gazebo_model_path = os.path.join(pkg_dog2_description, "..")
         if "GZ_SIM_RESOURCE_PATH" in os.environ:
@@ -95,13 +116,13 @@ def generate_launch_description():
 
         gazebo = IncludeLaunchDescription(
             PythonLaunchDescriptionSource(os.path.join(pkg_gazebo_ros, "launch", "gz_sim.launch.py")),
-            launch_arguments={"gz_args": [f"-r {LaunchConfiguration('world').perform(context)} "]}.items(),
+            launch_arguments={"gz_args": [f"{world_path} "]}.items(),
             condition=IfCondition(LaunchConfiguration("use_gui")),
         )
 
         gazebo_headless = IncludeLaunchDescription(
             PythonLaunchDescriptionSource(os.path.join(pkg_gazebo_ros, "launch", "gz_sim.launch.py")),
-            launch_arguments={"gz_args": [f"-r -s {LaunchConfiguration('world').perform(context)} "]}.items(),
+            launch_arguments={"gz_args": [f"-s {world_path} "]}.items(),
             condition=UnlessCondition(LaunchConfiguration("use_gui")),
         )
 
@@ -120,6 +141,13 @@ def generate_launch_description():
             package="ros_gz_bridge",
             executable="parameter_bridge",
             arguments=["/clock@rosgraph_msgs/msg/Clock[gz.msgs.Clock"],
+            output="screen",
+        )
+
+        world_control_bridge = Node(
+            package="ros_gz_bridge",
+            executable="parameter_bridge",
+            arguments=[f"/world/{world_name}/control@ros_gz_interfaces/srv/ControlWorld"],
             output="screen",
         )
 
@@ -181,7 +209,24 @@ def generate_launch_description():
             parameters=[{"target_node": "/gz_ros2_control", "gain": LaunchConfiguration("p_gain")}],
         )
 
-        delayed_joint_state_broadcaster = TimerAction(period=10.0, actions=[load_joint_state_broadcaster])
+        startup_gate = Node(
+            package="dog2_motion_control",
+            executable="gz_startup_gate",
+            name="gz_startup_gate",
+            output="screen",
+            parameters=[
+                {
+                    "controller_manager_name": "/controller_manager",
+                    "required_controllers": [
+                        "joint_state_broadcaster",
+                        "joint_trajectory_controller",
+                        "rail_position_controller",
+                    ],
+                    "ready_topic": "/spider_startup_ready",
+                    "world_name": world_name,
+                }
+            ],
+        )
 
         start_joint_trajectory = RegisterEventHandler(
             event_handler=OnProcessExit(
@@ -207,7 +252,7 @@ def generate_launch_description():
         wait_for_spawn = RegisterEventHandler(
             event_handler=OnProcessExit(
                 target_action=spawn_entity,
-                on_exit=[delayed_joint_state_broadcaster],
+                on_exit=[load_joint_state_broadcaster],
             )
         )
 
@@ -216,6 +261,7 @@ def generate_launch_description():
             gazebo,
             gazebo_headless,
             clock_bridge,
+            world_control_bridge,
             robot_state_publisher,
             spawn_entity,
             wait_for_spawn,
@@ -223,6 +269,7 @@ def generate_launch_description():
             start_rail_controller,
             start_remaining_nodes,
             gz_gain_setter,
+            startup_gate,
         ]
 
     return LaunchDescription(
@@ -236,4 +283,3 @@ def generate_launch_description():
             OpaqueFunction(function=launch_setup),
         ]
     )
-

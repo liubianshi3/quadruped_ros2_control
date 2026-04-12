@@ -15,9 +15,11 @@ ros2 launch dog2_motion_control spider_gazebo_complete.launch.py
 - config_file: 步态参数配置文件路径
 - use_gui: 是否启动Gazebo GUI (默认: true)
 - world: 世界文件路径 (默认: empty.sdf)
+- spawn_z: 生成高度 m（默认 1.05；过低易穿地、起立阶段塌倒）
 """
 
 import os
+import xml.etree.ElementTree as ET
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import (
@@ -25,7 +27,6 @@ from launch.actions import (
     SetEnvironmentVariable,
     RegisterEventHandler,
     DeclareLaunchArgument,
-    TimerAction,
     OpaqueFunction,
 )
 from launch.event_handlers import OnProcessExit
@@ -35,6 +36,25 @@ from launch_ros.actions import Node
 from launch_ros.substitutions import FindPackageShare
 from launch.conditions import IfCondition, UnlessCondition
 import xacro
+
+
+def _resolve_world_name(world_path: str) -> str:
+    world_path = str(world_path).strip()
+    if world_path and os.path.isfile(world_path):
+        try:
+            root = ET.parse(world_path).getroot()
+            world_elem = root.find("world")
+            if world_elem is not None and world_elem.get("name"):
+                return str(world_elem.get("name"))
+        except Exception:
+            pass
+
+    if world_path:
+        world_stem = os.path.splitext(os.path.basename(world_path))[0].strip()
+        if world_stem:
+            return world_stem
+
+    return "empty"
 
 
 def generate_launch_description():
@@ -85,12 +105,21 @@ def generate_launch_description():
         default_value='/usr/share/ignition/ignition-gazebo6/worlds/empty.sdf',
         description='Gazebo世界文件路径'
     )
+
+    spawn_z_arg = DeclareLaunchArgument(
+        'spawn_z',
+        default_value='1.05',
+        description='Spawn dog2 base height (m); higher reduces foot penetration / birth collapse'
+    )
     def launch_setup(context):
         # 配置文件路径（不依赖 launch context）
         controllers_yaml = os.path.join(pkg_dog2_description, 'config', 'ros2_controllers.yaml')
 
         # URDF xacro 参数：mass_scale
         mass_scale = LaunchConfiguration('mass_scale').perform(context)
+        world_path = LaunchConfiguration('world').perform(context)
+        spawn_z = LaunchConfiguration('spawn_z').perform(context)
+        world_name = _resolve_world_name(world_path)
 
         # 设置Gazebo模型路径环境变量
         gazebo_model_path = os.path.join(pkg_dog2_description, '..')
@@ -113,7 +142,9 @@ def generate_launch_description():
         )
         robot_description = {'robot_description': robot_description_config.toxml()}
 
-        # 启动Gazebo Fortress
+        # 启动 Gazebo Fortress（必须带 -r 自动播放）
+        # 若仿真从暂停开始：gz_ros2_control 的仿真步长为 0，controller switch 会 5s 超时；
+        # gz_startup_gate 又要求控制器 active 后才 unpause → 死锁。与 spider_gazebo_mpc 一致使用 -r。
         gazebo = IncludeLaunchDescription(
             PythonLaunchDescriptionSource(
                 os.path.join(pkg_gazebo_ros, 'launch', 'gz_sim.launch.py')
@@ -129,7 +160,7 @@ def generate_launch_description():
             condition=IfCondition(LaunchConfiguration('use_gui'))
         )
 
-        # 无GUI模式的Gazebo
+        # 无 GUI：-r 播放 + -s 无图形（顺序与 mpc launch 一致）
         gazebo_headless = IncludeLaunchDescription(
             PythonLaunchDescriptionSource(
                 os.path.join(pkg_gazebo_ros, 'launch', 'gz_sim.launch.py')
@@ -161,6 +192,13 @@ def generate_launch_description():
             output='screen'
         )
 
+        world_control_bridge = Node(
+            package='ros_gz_bridge',
+            executable='parameter_bridge',
+            arguments=[f'/world/{world_name}/control@ros_gz_interfaces/srv/ControlWorld'],
+            output='screen'
+        )
+
         # 在Gazebo中生成机器人
         spawn_entity = Node(
             package='ros_gz_sim',
@@ -170,7 +208,7 @@ def generate_launch_description():
                 '-name', 'dog2',
                 '-x', '0.0',
                 '-y', '0.0',
-                '-z', '0.8',
+                '-z', spawn_z,
             ],
             output='screen'
         )
@@ -234,10 +272,23 @@ def generate_launch_description():
             ],
         )
 
-        # 延迟启动 Joint State Broadcaster，等待 Gazebo 内部的 controller_manager 就绪
-        delayed_joint_state_broadcaster = TimerAction(
-            period=10.0,
-            actions=[load_joint_state_broadcaster],
+        startup_gate = Node(
+            package='dog2_motion_control',
+            executable='gz_startup_gate',
+            name='gz_startup_gate',
+            output='screen',
+            parameters=[
+                {
+                    'controller_manager_name': '/controller_manager',
+                    'required_controllers': [
+                        'joint_state_broadcaster',
+                        'joint_trajectory_controller',
+                        'rail_position_controller',
+                    ],
+                    'ready_topic': '/spider_startup_ready',
+                    'world_name': world_name,
+                },
+            ],
         )
 
         # Joint State Broadcaster 启动后再启动轨迹控制器
@@ -271,7 +322,7 @@ def generate_launch_description():
             event_handler=OnProcessExit(
                 target_action=spawn_entity,
                 on_exit=[
-                    delayed_joint_state_broadcaster,
+                    load_joint_state_broadcaster,
                 ],
             )
         )
@@ -281,6 +332,7 @@ def generate_launch_description():
             gazebo,
             gazebo_headless,
             clock_bridge,
+            world_control_bridge,
             robot_state_publisher,
             spawn_entity,
             wait_for_spawn,
@@ -288,6 +340,7 @@ def generate_launch_description():
             start_rail_controller,
             start_remaining_nodes,
             gz_gain_setter,
+            startup_gate,
         ]
 
     return LaunchDescription([
@@ -297,5 +350,6 @@ def generate_launch_description():
         use_gui_arg,
         use_sim_time_arg,
         world_arg,
+        spawn_z_arg,
         OpaqueFunction(function=launch_setup),
     ])

@@ -2,6 +2,10 @@
 腿部参数数据模型
 
 定义机器人腿部的几何参数、关节限位和坐标系转换信息
+
+腿链拓扑与 base_link 语义轴以 dog2_description/urdf/dog2.urdf.xacro 中
+「Leg kinematic contract」注释块为准；变更 URDF 后运行
+dog2_description/scripts/check_joint_semantics.py。
 """
 
 from dataclasses import dataclass
@@ -12,8 +16,11 @@ from .joint_semantics import (
     COXA_ORIGIN_RPY,
     FEMUR_ORIGIN_RPY,
     LEG_BASE_RPY,
-    RAIL_LIMITS_BY_LEG,
     TIBIA_ORIGIN_RPY,
+)
+from .urdf_joint_limits import (
+    clear_dog2_urdf_joint_limits_cache,
+    load_dog2_urdf_joint_limits,
 )
 
 
@@ -25,7 +32,7 @@ class LegParameters:
     Attributes:
         leg_id: 腿部标识符 ('lf', 'rf', 'lh', 'rh')
         leg_num: 腿部编号 (1, 2, 3, 4)
-        base_position: 腿部基座在base_link中的位置 [x, y, z] (米)
+        base_position: 腿部基座在 base_link 中的 rail 锚点 [x, y, z] (米)；与 URDF *_rail_joint origin 一致
         base_rotation: 腿部坐标系旋转 [roll, pitch, yaw] (弧度)
         hip_offset:  rail_link -> coxa_joint 的位移 [x, y, z] (米)
         hip_rpy: coxa_joint origin 的固定 rpy [roll, pitch, yaw] (弧度)
@@ -96,12 +103,15 @@ def create_leg_parameters() -> Dict[str, LegParameters]:
 
     link_lengths = (L1, L2, L3)
 
-    # foot_tip in tibia_link frame: YZ 与 xacro 一致；X 横向收拢；Y +半直径后 −1.5×直径（沿 −tibia Y）；Z 下调与 xacro 一致
+    # foot_tip in tibia_link frame: analytical foot sphere center used by
+    # *_foot_fixed / foot_link. X is the per-leg inboard offset, Y shifts by
+    # +half diameter then -1.5 diameters along -tibia Y, and Z applies the
+    # final downward offset. Keep this formula aligned with dog2.urdf.xacro.
     FOOT_TIP_LATERAL_INBOARD_M = 0.024
     FOOT_SPHERE_RADIUS_M = 0.012
     FOOT_TIP_PLUS_Y_HALF_DIAMETER_M = FOOT_SPHERE_RADIUS_M  # 半直径 = r（d=2r）
     FOOT_TIP_MINUS_Y_ONE_AND_HALF_DIAMETER_M = 3.0 * FOOT_SPHERE_RADIUS_M  # 1.5×直径 = 3r
-    # 沿 tibia_link Z 累计下调；较「2×3/4 d + 2 d」上调 3×球直径（与 xacro 一致）
+    # Final Z placement of the foot sphere center in tibia_link.
     FOOT_TIP_Z_DOWN_M = (
         2.0 * 0.75 * 2.0 * FOOT_SPHERE_RADIUS_M
         + 2.0 * (2.0 * FOOT_SPHERE_RADIUS_M)
@@ -125,17 +135,14 @@ def create_leg_parameters() -> Dict[str, LegParameters]:
     foot4[1] += FOOT_TIP_PLUS_Y_HALF_DIAMETER_M - FOOT_TIP_MINUS_Y_ONE_AND_HALF_DIAMETER_M
     foot4[2] -= FOOT_TIP_Z_DOWN_M
 
-    # 关节限位（从URDF提取）
-    # 导轨：prismatic joint limits
-    # 旋转关节：revolute joint limits（弧度）
+    urdf_joint_limits = load_dog2_urdf_joint_limits()
     joint_limits_template = {
-        'coxa': (-2.618, 2.618),   # coxa关节限位（约±150度）
-        'femur': (-2.8, 2.8),      # femur关节限位（约±160度）
-        'tibia': (-2.8, 2.8),      # tibia关节限位（约±160度）
+        role: tuple(limits)
+        for role, limits in urdf_joint_limits.revolute_by_role.items()
     }
     
     # 腿部1：左前 (lf) -> leg1
-    # base_position 与 URDF leg anchor 保持一致（base_link-local）
+    # base_position 与 URDF rail 锚点一致（base_link-local，见 dog2.urdf.xacro）
     leg1_params = LegParameters(
         leg_id='lf',
         leg_num=1,
@@ -149,7 +156,7 @@ def create_leg_parameters() -> Dict[str, LegParameters]:
         tibia_rpy=TIBIA_ORIGIN_RPY.copy(),
         link_lengths=link_lengths,
         joint_limits={
-            'rail': RAIL_LIMITS_BY_LEG['lf'],  # +q = base_link +X
+            'rail': urdf_joint_limits.rail_by_leg['lf'],  # +q = base_link +X
             **joint_limits_template
         },
         shin_xyz=np.array([0.0255, -0.1435, -0.0694]),
@@ -158,7 +165,7 @@ def create_leg_parameters() -> Dict[str, LegParameters]:
     )
 
     # 腿部2：左后 (lh) -> leg2
-    # base_position 与 URDF leg anchor 保持一致（base_link-local）
+    # base_position 与 URDF rail 锚点一致（base_link-local）
     leg2_params = LegParameters(
         leg_id='lh',
         leg_num=2,
@@ -172,7 +179,7 @@ def create_leg_parameters() -> Dict[str, LegParameters]:
         tibia_rpy=TIBIA_ORIGIN_RPY.copy(),
         link_lengths=link_lengths,
         joint_limits={
-            'rail': RAIL_LIMITS_BY_LEG['lh'],  # +q = base_link +X
+            'rail': urdf_joint_limits.rail_by_leg['lh'],  # +q = base_link +X
             **joint_limits_template
         },
         shin_xyz=np.array([0.0255, -0.1435, -0.0694]),
@@ -181,13 +188,13 @@ def create_leg_parameters() -> Dict[str, LegParameters]:
     )
 
     # 腿部3：右后 (rh) -> leg3
-    # base_position 与 URDF leg anchor 保持一致（base_link-local）
+    # base_position 与 URDF rail 锚点一致（base_link-local）
     leg3_params = LegParameters(
         leg_id='rh',
         leg_num=3,
-        base_position=np.array([0.3711, 0.2475, 0.0]),
+        base_position=np.array([0.3711, 0.1825, 0.0]),
         base_rotation=LEG_BASE_RPY.copy(),
-        hip_offset=np.array([0.016, 0.0199, -0.055]),
+        hip_offset=np.array([-0.016, 0.0199, 0.055]),
         hip_rpy=COXA_ORIGIN_RPY.copy(),
         knee_offset=np.array([-0.0233, -0.055, -0.0254]),
         knee_rpy=FEMUR_ORIGIN_RPY.copy(),
@@ -195,7 +202,7 @@ def create_leg_parameters() -> Dict[str, LegParameters]:
         tibia_rpy=TIBIA_ORIGIN_RPY.copy(),
         link_lengths=link_lengths,
         joint_limits={
-            'rail': RAIL_LIMITS_BY_LEG['rh'],  # +q = base_link +X
+            'rail': urdf_joint_limits.rail_by_leg['rh'],  # +q = base_link +X
             **joint_limits_template
         },
         shin_xyz=np.array([-0.0265, -0.1435, -0.0694]),
@@ -204,13 +211,13 @@ def create_leg_parameters() -> Dict[str, LegParameters]:
     )
 
     # 腿部4：右前 (rf) -> leg4
-    # base_position 与 URDF leg anchor 保持一致（base_link-local）
+    # base_position 与 URDF rail 锚点一致（base_link-local）
     leg4_params = LegParameters(
         leg_id='rf',
         leg_num=4,
-        base_position=np.array([0.1291, 0.2575, 0.0]),
+        base_position=np.array([0.1291, 0.1825, 0.0]),
         base_rotation=LEG_BASE_RPY.copy(),
-        hip_offset=np.array([-0.0116, 0.0199, -0.055]),
+        hip_offset=np.array([0.0116, 0.0199, 0.055]),
         hip_rpy=COXA_ORIGIN_RPY.copy(),
         knee_offset=np.array([-0.0233, -0.055, -0.0254]),
         knee_rpy=FEMUR_ORIGIN_RPY.copy(),
@@ -218,7 +225,7 @@ def create_leg_parameters() -> Dict[str, LegParameters]:
         tibia_rpy=TIBIA_ORIGIN_RPY.copy(),
         link_lengths=link_lengths,
         joint_limits={
-            'rail': RAIL_LIMITS_BY_LEG['rf'],  # +q = base_link +X
+            'rail': urdf_joint_limits.rail_by_leg['rf'],  # +q = base_link +X
             **joint_limits_template
         },
         shin_xyz=np.array([-0.0265, -0.1430, -0.0691]),
@@ -232,6 +239,20 @@ def create_leg_parameters() -> Dict[str, LegParameters]:
         'rh': leg3_params,
         'rf': leg4_params,
     }
+
+
+def reload_leg_parameter_joint_limits_from_urdf(force_reload: bool = False) -> str:
+    """Refresh shared LegParameters limits from the authoritative xacro source."""
+
+    if force_reload:
+        clear_dog2_urdf_joint_limits_cache()
+
+    urdf_joint_limits = load_dog2_urdf_joint_limits()
+    for leg_id, params in LEG_PARAMETERS.items():
+        params.joint_limits["rail"] = urdf_joint_limits.rail_by_leg[leg_id]
+        for role, limits in urdf_joint_limits.revolute_by_role.items():
+            params.joint_limits[role] = limits
+    return urdf_joint_limits.source_path
 
 
 # 预创建的全局参数对象（方便快速访问）

@@ -37,9 +37,6 @@ class ConfigLoader:
         },
         'joint_limits': {
             'rail': {'min': -0.05, 'max': 0.05},
-            'haa': {'min': -0.785, 'max': 0.785},
-            'hfe': {'min': -1.57, 'max': 1.57},
-            'kfe': {'min': -2.356, 'max': 0.0}
         },
         'control': {
             'frequency': 50.0,
@@ -261,7 +258,7 @@ class ConfigLoader:
         Returns:
             True表示有效，False表示无效
         """
-        required_joints = ['rail', 'haa', 'hfe', 'kfe']
+        required_joints = ['rail']
         for joint in required_joints:
             if joint not in joint_limits:
                 print(f"Error: Missing joint limit for '{joint}'")
@@ -381,7 +378,8 @@ class ConfigLoader:
         """获取关节限位
         
         Returns:
-            关节限位字典
+            配置文件中的关节限位字典。
+            旋转关节限位的权威来源是 dog2 xacro/URDF；这里保留 rail 配置兼容旧格式。
         """
         if not self.is_loaded:
             self.load()
