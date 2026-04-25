@@ -139,15 +139,14 @@ Dog2Model::SlidingJointState Dog2Model::getSlidingJointState(
 Eigen::Vector4d Dog2Model::slidingJointLowerLimits() const {
     // 从URDF中的关节限位
     Eigen::Vector4d limits;
-    limits << -0.111, -0.008, -0.008, -0.111;  // j1, j2, j3, j4 (单位：m)
+    limits << 0.0, -0.111, 0.0, -0.111;  // lf, lh, rh, rf (单位：m)
     return limits;
 }
 
 Eigen::Vector4d Dog2Model::slidingJointUpperLimits() const {
     Eigen::Vector4d limits;
-    limits << 0.008, 0.111, 0.111, 0.008;  // j1, j2, j3, j4 (单位：m)
+    limits << 0.111, 0.0, 0.111, 0.0;  // lf, lh, rh, rf (单位：m)
     return limits;
 }
 
 } // namespace dog2_dynamics
-

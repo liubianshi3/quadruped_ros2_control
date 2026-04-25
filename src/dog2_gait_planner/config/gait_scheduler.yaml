@@ -1,0 +1,9 @@
+dog2_gait_scheduler:
+  ros__parameters:
+    use_sim_time: true
+    gait: trot
+    cycle_time: 0.8
+    publish_rate: 20.0
+    cmd_vel_topic: /cmd_vel
+    contact_phase_topic: /dog2/gait/contact_phase
+    gait_command_topic: /dog2/gait/command

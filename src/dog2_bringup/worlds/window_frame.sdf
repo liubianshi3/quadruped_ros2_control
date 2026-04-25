@@ -1,0 +1,158 @@
+<?xml version="1.0"?>
+<sdf version="1.9">
+  <world name="dog2_window_frame">
+    <gravity>0 0 -9.81</gravity>
+    <physics name="1ms" type="ignored">
+      <max_step_size>0.001</max_step_size>
+      <real_time_factor>1.0</real_time_factor>
+      <real_time_update_rate>1000</real_time_update_rate>
+    </physics>
+
+    <plugin filename="gz-sim-physics-system" name="gz::sim::systems::Physics"/>
+    <plugin filename="gz-sim-user-commands-system" name="gz::sim::systems::UserCommands"/>
+    <plugin filename="gz-sim-scene-broadcaster-system" name="gz::sim::systems::SceneBroadcaster"/>
+
+    <light type="directional" name="sun">
+      <cast_shadows>true</cast_shadows>
+      <pose>0 0 10 0 0 0</pose>
+      <diffuse>0.8 0.8 0.8 1</diffuse>
+      <specular>0.2 0.2 0.2 1</specular>
+      <attenuation>
+        <range>1000</range>
+        <constant>0.9</constant>
+        <linear>0.01</linear>
+        <quadratic>0.001</quadratic>
+      </attenuation>
+      <direction>-0.5 0.1 -0.9</direction>
+    </light>
+
+    <model name="ground_plane">
+      <static>true</static>
+      <link name="link">
+        <collision name="collision">
+          <geometry>
+            <plane>
+              <normal>0 0 1</normal>
+              <size>200 200</size>
+            </plane>
+          </geometry>
+          <surface>
+            <friction>
+              <ode>
+                <mu>1.0</mu>
+                <mu2>1.0</mu2>
+              </ode>
+            </friction>
+          </surface>
+        </collision>
+        <visual name="visual">
+          <geometry>
+            <plane>
+              <normal>0 0 1</normal>
+              <size>200 200</size>
+            </plane>
+          </geometry>
+          <material>
+            <ambient>0.72 0.72 0.72 1</ambient>
+            <diffuse>0.72 0.72 0.72 1</diffuse>
+            <specular>0.10 0.10 0.10 1</specular>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+    <model name="window_frame">
+      <static>true</static>
+      <pose>1.55 0 0 0 0 0</pose>
+      <link name="frame">
+        <collision name="left_column_collision">
+          <pose>0 -0.26 0.30 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>0.08 0.10 0.60</size>
+            </box>
+          </geometry>
+        </collision>
+        <visual name="left_column_visual">
+          <pose>0 -0.26 0.30 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>0.08 0.10 0.60</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.30 0.48 0.64 1</ambient>
+            <diffuse>0.30 0.48 0.64 1</diffuse>
+            <specular>0.08 0.12 0.16 1</specular>
+          </material>
+        </visual>
+
+        <collision name="right_column_collision">
+          <pose>0 0.26 0.30 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>0.08 0.10 0.60</size>
+            </box>
+          </geometry>
+        </collision>
+        <visual name="right_column_visual">
+          <pose>0 0.26 0.30 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>0.08 0.10 0.60</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.30 0.48 0.64 1</ambient>
+            <diffuse>0.30 0.48 0.64 1</diffuse>
+            <specular>0.08 0.12 0.16 1</specular>
+          </material>
+        </visual>
+
+        <collision name="top_beam_collision">
+          <pose>0 0 0.58 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>0.08 0.62 0.08</size>
+            </box>
+          </geometry>
+        </collision>
+        <visual name="top_beam_visual">
+          <pose>0 0 0.58 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>0.08 0.62 0.08</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.82 0.45 0.20 1</ambient>
+            <diffuse>0.82 0.45 0.20 1</diffuse>
+            <specular>0.16 0.09 0.04 1</specular>
+          </material>
+        </visual>
+
+        <collision name="guide_post_collision">
+          <pose>0 0 0.16 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>0.08 0.06 0.32</size>
+            </box>
+          </geometry>
+        </collision>
+        <visual name="guide_post_visual">
+          <pose>0 0 0.16 0 0 0</pose>
+          <geometry>
+            <box>
+              <size>0.08 0.06 0.32</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.56 0.26 0.22 1</ambient>
+            <diffuse>0.56 0.26 0.22 1</diffuse>
+            <specular>0.10 0.05 0.05 1</specular>
+          </material>
+        </visual>
+      </link>
+    </model>
+  </world>
+</sdf>

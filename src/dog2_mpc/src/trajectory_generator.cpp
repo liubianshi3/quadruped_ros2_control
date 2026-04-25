@@ -85,8 +85,9 @@ std::vector<Eigen::VectorXd> TrajectoryGenerator::generateWalkingTrajectory(
         ref_state(10) = 0.0;  // wy
         ref_state(11) = vyaw_cmd;  // wz
         
-        // 滑动副：行走时保持为0
-        ref_state.segment<4>(12).setZero();
+        // 阶段 3 简化 walking 中，rail_joint 默认保持当前锁定姿态，
+        // 不把 rail 参考强行拉回 0，避免 rail 约束主导主控制链路。
+        ref_state.segment<4>(12) = current_state.segment<4>(12);
         
         trajectory[k] = ref_state;
     }

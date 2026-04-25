@@ -1,0 +1,5 @@
+bool enabled
+string strategy
+---
+bool success
+string message

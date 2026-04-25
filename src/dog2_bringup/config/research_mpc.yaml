@@ -1,0 +1,34 @@
+mpc_node_complete:
+  ros__parameters:
+    mass: 11.8
+    horizon: 10
+    dt: 0.05
+    control_frequency: 20.0
+    mode: hover
+    nominal_body_height: 0.40
+    default_stance_length: 0.40
+    default_stance_width: 0.30
+    enable_sliding_constraints: true
+    rail_tracking_error_threshold: 0.005
+    support_polygon_margin_threshold: 0.015
+    crossing_transition_stable_time: 0.15
+    slack_linear_weight: 5000.0
+    vertical_support_enabled: true
+    vertical_support_target_height: 0.40
+    vertical_support_kp: 700.0
+    vertical_support_kd: 90.0
+    vertical_support_min_total_force_multiplier: 1.20
+    vertical_support_max_leg_force: 100.0
+    vertical_support_height_error_limit: 0.25
+    attitude_support_enabled: true
+    attitude_support_roll_target: 0.0
+    attitude_support_pitch_target: 0.0
+    attitude_support_roll_kp: 90.0
+    attitude_support_roll_kd: 12.0
+    attitude_support_pitch_kp: 140.0
+    attitude_support_pitch_kd: 18.0
+    attitude_support_max_leg_delta: 24.0
+    crossing_forward_assist_enabled: true
+    crossing_forward_assist_force_per_leg: 14.0
+    crossing_force_full_support: false
+    crossing_freeze_rail_targets: false

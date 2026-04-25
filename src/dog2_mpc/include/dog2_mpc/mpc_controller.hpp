@@ -103,6 +103,13 @@ public:
      * @param slack_linear_weight 松弛变量惩罚权重（用于 q 向量）
      */
     void setSlackLinearWeight(double slack_linear_weight);
+
+    /**
+     * @brief 冻结 crossing 期间的 rail 参考和 rail-stage 约束（诊断用）
+     */
+    void setFreezeCrossingRailTargets(bool freeze) {
+        freeze_crossing_rail_targets_ = freeze;
+    }
     
     /**
      * @brief 求解MPC优化问题（16维扩展版本）
@@ -296,6 +303,9 @@ private:
 
     // rail soft bound exact penalty 线性项权重
     double current_slack_weight_;
+
+    // crossing 诊断：冻结 rail 目标和 rail-stage 约束
+    bool freeze_crossing_rail_targets_;
     
     // 参考轨迹（16维扩展状态）
     std::vector<Eigen::VectorXd> x_ref_;

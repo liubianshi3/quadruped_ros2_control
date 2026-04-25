@@ -1,4 +1,5 @@
 import time
+from typing import Optional
 
 import rclpy
 from rclpy.node import Node
@@ -15,10 +16,29 @@ class GzGainSetter(Node):
 
         self._start = time.time()
         self._done = False
+        self._success: Optional[bool] = None
         self._pending_future = None
         self._client = None
         self._target_service = ""
+        self._last_deferred_log = 0.0
         self._timer = self.create_timer(0.2, self._tick)
+
+    @property
+    def done(self) -> bool:
+        return self._done
+
+    def _finish(self, success: bool, message: str) -> None:
+        if self._done:
+            return
+
+        if success:
+            self.get_logger().info(message)
+        else:
+            self.get_logger().error(message)
+
+        self._done = True
+        self._success = success
+        self._timer.cancel()
 
     @staticmethod
     def _normalize_node_name(target_node: str) -> str:
@@ -62,15 +82,22 @@ class GzGainSetter(Node):
         results = response.results
         if not results or not results[0].successful:
             reason = results[0].reason if results else "unknown"
+            if "was not declared" in reason:
+                now = time.time()
+                if now - self._last_deferred_log >= 2.0:
+                    self.get_logger().info(
+                        f"Waiting for {self._target_service} to declare position_proportional_gain"
+                    )
+                    self._last_deferred_log = now
+                return
             self.get_logger().warn(f"Failed to set position_proportional_gain: {reason}")
             return
 
         gain = float(self.get_parameter("gain").value)
-        self.get_logger().info(
-            f"Set {self._target_service} position_proportional_gain = {gain}"
+        self._finish(
+            success=True,
+            message=f"Set {self._target_service} position_proportional_gain = {gain}",
         )
-        self._done = True
-        rclpy.shutdown()
 
     def _tick(self):
         if self._done:
@@ -78,9 +105,7 @@ class GzGainSetter(Node):
 
         timeout_s = float(self.get_parameter("timeout_s").value)
         if time.time() - self._start > timeout_s:
-            self.get_logger().error("Timeout waiting to set gz gain.")
-            self._done = True
-            rclpy.shutdown()
+            self._finish(success=False, message="Timeout waiting to set gz gain.")
             return
 
         target_node = str(self.get_parameter("target_node").value)
@@ -115,4 +140,12 @@ class GzGainSetter(Node):
 def main():
     rclpy.init()
     node = GzGainSetter()
-    rclpy.spin(node)
+    try:
+        while rclpy.ok() and not node.done:
+            rclpy.spin_once(node, timeout_sec=0.2)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        node.destroy_node()
+        if rclpy.ok():
+            rclpy.shutdown()

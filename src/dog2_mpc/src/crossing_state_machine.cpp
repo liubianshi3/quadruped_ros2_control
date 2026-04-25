@@ -86,24 +86,27 @@ CrossingStateMachine::RobotState CrossingStateMachine::getTargetState() const {
 CrossingStateMachine::StageConstraints CrossingStateMachine::getCurrentConstraints() const {
     StageConstraints constraints;
     
-    // 滑动副基本限制
-    constraints.sliding_min << -0.111, -0.008, -0.008, -0.111;  // [j1, j2, j3, j4]
-    constraints.sliding_max <<  0.008,  0.111,  0.111,  0.008;
+    // Canonical Dog2 rail order and limits:
+    // [lf_rail_joint, lh_rail_joint, rh_rail_joint, rf_rail_joint].
+    // These values are derived from dog2.urdf.xacro / urdf_joint_limits.py;
+    // do not collapse them into a single signed constant because mirrored
+    // legs have different valid q ranges.
+    constraints.sliding_min << 0.0, -0.111, 0.0, -0.111;
+    constraints.sliding_max << 0.111, 0.0, 0.111, 0.0;
     constraints.sliding_vel_max << 1.0, 1.0, 1.0, 1.0;  // 1.0 m/s
     
     // 根据当前状态调整约束
     switch (current_state_) {
         case CrossingState::APPROACH:
-            // 正常行走，滑动副保持中立
-            constraints.sliding_min.setZero();
-            constraints.sliding_max.setZero();
+            // 正常接近阶段只通过目标函数偏向 neutral，不再硬锁到 0。
+            // 这样 measured rail 若已在物理限位附近，不会把 QP 直接推成不可行。
             break;
             
         case CrossingState::BODY_FORWARD_SHIFT:
-            // 前腿向后滑，后腿向前滑
-            // 使用不等式约束而非等式约束，给求解器留出空间
-            constraints.sliding_min << -0.111, 0.0, 0.0, -0.111;
-            constraints.sliding_max << -0.100, 0.111, 0.111, -0.100;  // 前腿留出11mm余量
+            // Rail compact-body posture inside the real per-joint limits:
+            // lf/rh move toward +q, lh/rf move toward -q.
+            constraints.sliding_min << 0.100, -0.111, 0.100, -0.111;
+            constraints.sliding_max << 0.111, -0.100, 0.111, -0.100;
             break;
             
         case CrossingState::HYBRID_GAIT_WALKING:
@@ -174,7 +177,9 @@ bool CrossingStateMachine::canTransitionToNext(const RobotState& current_state) 
 
     // 额外 guard：rail tracking + support polygon，避免阶段几何时序错配
     const double rail_tracking_error = computeRailTrackingError(current_state);
-    const bool railStable = rail_tracking_error < rail_tracking_error_threshold_;
+    const bool railStable =
+        current_state_ == CrossingState::APPROACH ||
+        rail_tracking_error < rail_tracking_error_threshold_;
 
     int contact_count = 0;
     for (int i = 0; i < 4; ++i) {
@@ -390,22 +395,24 @@ double CrossingStateMachine::getProgress() const {
 
 // 各阶段完成条件检查
 bool CrossingStateMachine::checkApproachComplete(const RobotState& state) const {
-    // 接近完成条件：距离窗框0.2m，速度接近0
+    // 接近完成条件：到达窗框前约 0.2m，并处于低速可切换状态。
+    // 不要求完全静止，否则 Gazebo 中低速通过窗口前沿时很难稳定进入
+    // rail compact-body 阶段。
     double distance_to_window = window_.x_position - state.position.x();
     bool position_ok = distance_to_window <= 0.2;
-    bool velocity_ok = std::abs(state.velocity.x()) < 0.05;
+    bool velocity_ok = std::abs(state.velocity.x()) < 0.45;
     
     return position_ok && velocity_ok;
 }
 
 bool CrossingStateMachine::checkBodyForwardShiftComplete(const RobotState& state) const {
-    // 机身前探完成条件：前腿滑动副完全伸展
-    bool front_slides_extended = (state.sliding_positions[0] <= -0.10) && 
-                                (state.sliding_positions[3] <= -0.10);
-    bool rear_slides_extended = (state.sliding_positions[1] >= 0.10) && 
-                               (state.sliding_positions[2] >= 0.10);
+    // 机身前探完成条件：四个 rail 到达真实限位内的 compact-body 姿态。
+    bool diagonal_positive_extended = (state.sliding_positions[0] >= 0.10) &&
+                                      (state.sliding_positions[2] >= 0.10);
+    bool diagonal_negative_extended = (state.sliding_positions[1] <= -0.10) &&
+                                      (state.sliding_positions[3] <= -0.10);
     
-    return front_slides_extended && rear_slides_extended;
+    return diagonal_positive_extended && diagonal_negative_extended;
 }
 
 bool CrossingStateMachine::checkFrontLegsTransitComplete(const RobotState& state) const {
@@ -501,8 +508,10 @@ CrossingStateMachine::RobotState CrossingStateMachine::computeBodyForwardShiftTa
     target.position.x() = window_.x_position - 0.2 + 0.111;
     target.velocity.setZero();
     
-    // 滑动副伸展
-    target.sliding_positions << -0.111, 0.111, 0.111, -0.111;
+    // Rail compact-body target in real joint order:
+    // lf_rail_joint -> +limit, lh_rail_joint -> -limit,
+    // rh_rail_joint -> +limit, rf_rail_joint -> -limit.
+    target.sliding_positions << 0.111, -0.111, 0.111, -0.111;
     
     // 所有腿保持肘式，接触地面
     for (int i = 0; i < 4; ++i) {

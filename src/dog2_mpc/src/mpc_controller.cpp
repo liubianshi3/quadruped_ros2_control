@@ -11,6 +11,7 @@ MPCController::MPCController(double mass,
       base_foot_positions_(Eigen::MatrixXd::Zero(4, 3)),
       sliding_velocity_(Eigen::Vector4d::Zero()),
       crossing_enabled_(false),
+      freeze_crossing_rail_targets_(false),
       last_solve_time_(0.0),
       last_solve_status_(-1),
       initialized_(false) {
@@ -209,8 +210,13 @@ void MPCController::buildQP(const Eigen::VectorXd& x0,
     //     d_i + s_lower(k,i) >= d_min(i)
     //     d_i - s_upper(k,i) <= d_max(i)
     //   并在目标函数中对 slack 做 exact penalty（q 一次项 + P 二次项）
+    const bool crossing_approach =
+        crossing_enabled_ && crossing_state_machine_ &&
+        crossing_state_machine_->getCurrentState() == CrossingStateMachine::CrossingState::APPROACH;
     const bool use_soft_rail_bounds = crossing_enabled_ && crossing_state_machine_ &&
-                                       params_.enable_sliding_constraints;
+                                       params_.enable_sliding_constraints &&
+                                       !crossing_approach &&
+                                       !freeze_crossing_rail_targets_;
     const int num_rail_slack = use_soft_rail_bounds ? 8 : 0;  // 4 lower + 4 upper
     
     // 优化变量: z = [x_1, u_0, x_2, u_1, ..., x_N, u_{N-1}]
@@ -244,7 +250,7 @@ void MPCController::buildQP(const Eigen::VectorXd& x0,
 
     // slack cost for soft rail bounds
     if (use_soft_rail_bounds) {
-        const double slack_quadratic_weight = 1e4;  // 二次项（保持数值稳定）
+        const double slack_quadratic_weight = 1e3;  // 二次项（保持数值稳定）
         for (int k = 0; k < N; ++k) {
             for (int i = 0; i < 4; ++i) {
                 const int s_lower_idx = rail_slack_base + k * 4 + i;
@@ -284,10 +290,12 @@ void MPCController::buildQP(const Eigen::VectorXd& x0,
         // 状态跟踪项（16维）
         q.segment(x_offset, nx) = -params_.Q * x_ref_[k];
         
-        // 重力补偿项：鼓励向上的足端力
+        // 重力补偿项：在 stage-3 简化 SRBD MPC 中，若没有足够的垂向力先验，
+        // 短时域优化会倾向于“少用力、允许机身下坠”。这里给每条腿加入
+        // 接近静态支撑力的线性偏置，帮助求解器在站立/低速行走时维持 body height。
         double weight_per_leg = extended_srbd_model_->getMass() * 9.81 / 4.0;
         for (int i = 0; i < 4; ++i) {
-            q(u_offset + i * 3 + 2) = -0.1 * weight_per_leg;  // z方向，负号表示鼓励正值
+            q(u_offset + i * 3 + 2) = -1.0 * weight_per_leg;  // z方向，负号表示鼓励正值
         }
     }
     
@@ -564,7 +572,9 @@ void MPCController::updateCrossingState(const Eigen::VectorXd& x0) {
     for (int k = 0; k < params_.horizon; ++k) {
         x_ref_[k] = Eigen::VectorXd::Zero(16);
         x_ref_[k].segment<12>(0) = crossing_ref_12d[k];  // SRBD状态
-        x_ref_[k].segment<4>(12) = target_state.sliding_positions;  // 滑动副目标
+        x_ref_[k].segment<4>(12) = freeze_crossing_rail_targets_
+            ? robot_state.sliding_positions
+            : target_state.sliding_positions;
     }
 }
 
@@ -634,22 +644,42 @@ void MPCController::addSlidingConstraints(std::vector<Eigen::Triplet<double>>& A
     const int nx = 16;
     const int nu = 12;
     const int sliding_start_idx = 12;  // 滑动副在状态向量中的起始索引
+
+    if (crossing_enabled_ &&
+        crossing_state_machine_ &&
+        crossing_state_machine_->getCurrentState() == CrossingStateMachine::CrossingState::APPROACH) {
+        // APPROACH 仍是低速靠近窗口阶段。此时 measured rail 可能已经被
+        // WBC/物理限位带到任意合法边界，过早引入 crossing rail soft-bound、
+        // symmetry 和 coordination guard 会把本来可行的行走 QP 推成 infeasible。
+        // Rail 的真实越障重排从 BODY_FORWARD_SHIFT 开始再施加阶段约束。
+        std::cout << "[MPC] APPROACH阶段跳过crossing rail约束，保持QP可行性" << std::endl;
+        return;
+    }
     
     // 获取滑动副限位（如果越障开启则使用 CrossingStateMachine 的 stage-specific constraints）
     Eigen::Vector4d d_min, d_max;
     Eigen::Vector4d v_slide_max_vec;
-    if (crossing_enabled_ && crossing_state_machine_) {
+    if (crossing_enabled_ && crossing_state_machine_ &&
+        !freeze_crossing_rail_targets_) {
         const auto stage_constraints = crossing_state_machine_->getCurrentConstraints();
         d_min = stage_constraints.sliding_min;
         d_max = stage_constraints.sliding_max;
         v_slide_max_vec = stage_constraints.sliding_vel_max;
     } else {
-        d_min << -0.111, -0.008, -0.008, -0.111;  // j1, j2, j3, j4
-        d_max << 0.008, 0.111, 0.111, 0.008;
+        // Canonical rail semantics from dog2.urdf.xacro:
+        // lf/rh in [0.0, 0.111], lh/rf in [-0.111, 0.0].
+        // Walking stage keeps rails near their current locked stance, so the
+        // primary feasibility constraints should only enforce these per-leg
+        // physical limits and rate bounds.
+        d_min << 0.0, -0.111, 0.0, -0.111;
+        d_max << 0.111, 0.0, 0.111, 0.0;
         v_slide_max_vec.setConstant(1.0);  // 最大速度 1 m/s
     }
-    double epsilon_sym = 0.02;  // 对称容差 2cm
-    double coord_tolerance = 0.05;  // 协调容差 5cm
+    // These are guardrail constraints, not the primary rail target. Keep them
+    // loose enough that entering crossing with measured rails near arbitrary
+    // physical-limit positions does not make the first QP infeasible.
+    double epsilon_sym = 0.15;
+    double coord_tolerance = 0.25;
     
     int n_constraints_added = 0;
 
@@ -658,12 +688,13 @@ void MPCController::addSlidingConstraints(std::vector<Eigen::Triplet<double>>& A
     //     d_i + s_i >= d_min
     //     d_i - s_i <= d_max
     //   - 非 crossing：直接硬约束
-    const bool use_soft_rail_bounds = crossing_enabled_ && crossing_state_machine_;
+    const bool use_soft_rail_bounds =
+        crossing_enabled_ && crossing_state_machine_ && !freeze_crossing_rail_targets_;
     const int nv_base = N * (nx + nu);
     const int slack_lower_base = nv_base;       // s_lower 放在末尾
     const int slack_upper_base = nv_base + N * 4;  // s_upper 在 s_lower 后面
-    const double BIG = 1e3;
-    const double osqp_infty = 1e20;  // slack 非负上界（近似无穷）
+    const double BIG = 10.0;
+    const double osqp_infty = 1.0;  // rail bound slack 只需覆盖厘米级 rail 误差
 
     for (int k = 0; k < N; ++k) {
         for (int i = 0; i < 4; ++i) {
@@ -738,42 +769,48 @@ void MPCController::addSlidingConstraints(std::vector<Eigen::Triplet<double>>& A
         }
     }
     
-    // 3. 对称约束：-epsilon <= d1 - d3 <= epsilon, -epsilon <= d2 - d4 <= epsilon
-    for (int k = 0; k < N; ++k) {
-        // d1 - d3
-        {
-            int d1_idx = k * (nx + nu) + sliding_start_idx + 0;
-            int d3_idx = k * (nx + nu) + sliding_start_idx + 2;
-            
-            A_triplets.push_back(Eigen::Triplet<double>(l_vec.size(), d1_idx, 1.0));
-            A_triplets.push_back(Eigen::Triplet<double>(l_vec.size(), d3_idx, -1.0));
-            l_vec.push_back(-epsilon_sym);
-            u_vec.push_back(epsilon_sym);
+    // Symmetry / coordination are useful as secondary objectives in later WBC
+    // stages, but they are too restrictive for the current stage-3 simplified
+    // walking pipeline, where rail joints should stay close to the measured
+    // locked stance rather than dominate feasibility.
+    if (crossing_enabled_ && !freeze_crossing_rail_targets_) {
+        // 3. 对称约束：-epsilon <= d1 - d3 <= epsilon, -epsilon <= d2 - d4 <= epsilon
+        for (int k = 0; k < N; ++k) {
+            // d1 - d3
+            {
+                int d1_idx = k * (nx + nu) + sliding_start_idx + 0;
+                int d3_idx = k * (nx + nu) + sliding_start_idx + 2;
+
+                A_triplets.push_back(Eigen::Triplet<double>(l_vec.size(), d1_idx, 1.0));
+                A_triplets.push_back(Eigen::Triplet<double>(l_vec.size(), d3_idx, -1.0));
+                l_vec.push_back(-epsilon_sym);
+                u_vec.push_back(epsilon_sym);
+                n_constraints_added++;
+            }
+
+            // d2 - d4
+            {
+                int d2_idx = k * (nx + nu) + sliding_start_idx + 1;
+                int d4_idx = k * (nx + nu) + sliding_start_idx + 3;
+
+                A_triplets.push_back(Eigen::Triplet<double>(l_vec.size(), d2_idx, 1.0));
+                A_triplets.push_back(Eigen::Triplet<double>(l_vec.size(), d4_idx, -1.0));
+                l_vec.push_back(-epsilon_sym);
+                u_vec.push_back(epsilon_sym);
+                n_constraints_added++;
+            }
+        }
+
+        // 4. 协调约束：-tolerance <= d1 + d2 + d3 + d4 <= tolerance
+        for (int k = 0; k < N; ++k) {
+            for (int i = 0; i < 4; ++i) {
+                int var_idx = k * (nx + nu) + sliding_start_idx + i;
+                A_triplets.push_back(Eigen::Triplet<double>(l_vec.size(), var_idx, 1.0));
+            }
+            l_vec.push_back(-coord_tolerance);
+            u_vec.push_back(coord_tolerance);
             n_constraints_added++;
         }
-        
-        // d2 - d4
-        {
-            int d2_idx = k * (nx + nu) + sliding_start_idx + 1;
-            int d4_idx = k * (nx + nu) + sliding_start_idx + 3;
-            
-            A_triplets.push_back(Eigen::Triplet<double>(l_vec.size(), d2_idx, 1.0));
-            A_triplets.push_back(Eigen::Triplet<double>(l_vec.size(), d4_idx, -1.0));
-            l_vec.push_back(-epsilon_sym);
-            u_vec.push_back(epsilon_sym);
-            n_constraints_added++;
-        }
-    }
-    
-    // 4. 协调约束：-tolerance <= d1 + d2 + d3 + d4 <= tolerance
-    for (int k = 0; k < N; ++k) {
-        for (int i = 0; i < 4; ++i) {
-            int var_idx = k * (nx + nu) + sliding_start_idx + i;
-            A_triplets.push_back(Eigen::Triplet<double>(l_vec.size(), var_idx, 1.0));
-        }
-        l_vec.push_back(-coord_tolerance);
-        u_vec.push_back(coord_tolerance);
-        n_constraints_added++;
     }
     
     std::cout << "[MPC] 滑动副约束已添加: " << n_constraints_added << "个约束" << std::endl;
@@ -782,12 +819,14 @@ void MPCController::addSlidingConstraints(std::vector<Eigen::Triplet<double>>& A
 void MPCController::addRailWindowConstraints(std::vector<Eigen::Triplet<double>>& A_triplets,
                                             std::vector<double>& l_vec,
                                             std::vector<double>& u_vec) {
-    if (!crossing_enabled_ || !crossing_state_machine_) {
+    if (!crossing_enabled_ || !crossing_state_machine_ ||
+        freeze_crossing_rail_targets_) {
         return;
     }
 
     const int N = params_.horizon;
     const int nx = 16;  // 扩展状态维度
+    const int nu = 12;  // 控制维度
     const int sliding_start_idx = 12;  // d1..d4 在状态向量中的起始索引
 
     const auto stage = crossing_state_machine_->getCurrentState();
@@ -832,14 +871,14 @@ void MPCController::addRailWindowConstraints(std::vector<Eigen::Triplet<double>>
 
     int n_constraints_added = 0;
     for (int k = 0; k < N; ++k) {
-        const int x_idx = k * nx + 0;  // x_CoM
+        const int x_idx = k * (nx + nu) + 0;  // x_CoM in interleaved [x_k, u_k] layout
 
         for (int leg_i = 0; leg_i < 4; ++leg_i) {
             if (leg_mode[leg_i] == 0) {
                 continue;
             }
 
-            const int d_idx = k * nx + sliding_start_idx + leg_i;  // d_i
+            const int d_idx = k * (nx + nu) + sliding_start_idx + leg_i;  // d_i
 
             // row 对应到 A*x 的一行不等式约束 [l, u]
             const int row = static_cast<int>(l_vec.size());

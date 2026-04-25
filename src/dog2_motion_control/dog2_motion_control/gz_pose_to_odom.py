@@ -72,6 +72,16 @@ def _quat_delta_to_omega_world(prev_q: np.ndarray, curr_q: np.ndarray, dt: float
     return axis * (angle / dt)
 
 
+def _is_identity_like_transform(tfm: TransformStamped) -> bool:
+    tr = tfm.transform.translation
+    rot = tfm.transform.rotation
+    translation_norm = sqrt(float(tr.x) ** 2 + float(tr.y) ** 2 + float(tr.z) ** 2)
+    quat = _normalize_quat_xyzw(
+        np.array([float(rot.x), float(rot.y), float(rot.z), float(rot.w)], dtype=float)
+    )
+    return translation_norm < 1e-6 and np.linalg.norm(quat - np.array([0.0, 0.0, 0.0, 1.0])) < 1e-6
+
+
 @dataclass
 class _PoseSample:
     t_sec: float
@@ -87,10 +97,12 @@ class GzPoseToOdom(Node):
 
         self.declare_parameter("pose_topic", "/dog2/dynamic_pose_tf")
         self.declare_parameter("odom_topic", "/odom")
+        self.declare_parameter("external_odom_topic", "")
         self.declare_parameter("model_name", "dog2")
         self.declare_parameter("odom_frame", "odom")
         self.declare_parameter("base_frame", "base_link")
         self.declare_parameter("publish_only_when_no_external_odom", False)
+        self.declare_parameter("external_odom_timeout_sec", 0.35)
         self.declare_parameter("min_dt_sec", 0.002)
         self.declare_parameter("max_dt_sec", 0.2)
         self.declare_parameter("max_linear_speed", 8.0)
@@ -99,12 +111,16 @@ class GzPoseToOdom(Node):
 
         self._pose_topic = str(self.get_parameter("pose_topic").value)
         self._odom_topic = str(self.get_parameter("odom_topic").value)
+        self._external_odom_topic = str(self.get_parameter("external_odom_topic").value)
         self._model_name = str(self.get_parameter("model_name").value)
         self._odom_frame = str(self.get_parameter("odom_frame").value)
         self._base_frame = str(self.get_parameter("base_frame").value)
         self._base_frame_lower = self._base_frame.lower()
         self._publish_only_when_no_external_odom = bool(
             self.get_parameter("publish_only_when_no_external_odom").value
+        )
+        self._external_odom_timeout_sec = float(
+            max(float(self.get_parameter("external_odom_timeout_sec").value), 1e-3)
         )
         self._min_dt_sec = float(max(float(self.get_parameter("min_dt_sec").value), 1e-6))
         self._max_dt_sec = float(max(float(self.get_parameter("max_dt_sec").value), self._min_dt_sec))
@@ -131,15 +147,25 @@ class GzPoseToOdom(Node):
             self._on_pose_tf,
             qos_pose,
         )
+        self._external_odom_sub = None
+        if self._external_odom_topic and self._external_odom_topic != self._odom_topic:
+            self._external_odom_sub = self.create_subscription(
+                Odometry,
+                self._external_odom_topic,
+                self._on_external_odom,
+                qos_odom,
+            )
         self._odom_pub = self.create_publisher(Odometry, self._odom_topic, qos_odom)
         self._prev_sample: Optional[_PoseSample] = None
+        self._last_external_odom_sec: Optional[float] = None
         self._v_world_filt = np.zeros(3, dtype=float)
         self._w_world_filt = np.zeros(3, dtype=float)
         self._last_debug_sec = 0.0
 
         self.get_logger().info(
             f"gz_pose_to_odom ready: pose_topic='{self._pose_topic}', odom_topic='{self._odom_topic}', "
-            f"model='{self._model_name}', base_frame='{self._base_frame}'"
+            f"external_odom_topic='{self._external_odom_topic}', model='{self._model_name}', "
+            f"base_frame='{self._base_frame}'"
         )
 
     @staticmethod
@@ -166,17 +192,60 @@ class GzPoseToOdom(Node):
     def _select_transform(self, transforms: Sequence[TransformStamped]) -> Optional[TransformStamped]:
         if not transforms:
             return None
-        ranked = sorted(
-            transforms,
-            key=lambda tfm: self._transform_priority(tfm.child_frame_id),
-        )
-        best = ranked[0]
-        if self._transform_priority(best.child_frame_id) >= 100:
+
+        valid = [
+            tfm
+            for tfm in transforms
+            if self._transform_priority(tfm.child_frame_id) < 100
+        ]
+        if not valid:
             return None
+
+        ranked = sorted(valid, key=lambda tfm: self._transform_priority(tfm.child_frame_id))
+        best = ranked[0]
+
+        model_l = self._model_name.lower()
+        base_l = self._base_frame_lower
+        exact_model = next(
+            (tfm for tfm in valid if tfm.child_frame_id.lower() == model_l),
+            None,
+        )
+        exact_base = next(
+            (tfm for tfm in valid if tfm.child_frame_id.lower() == base_l),
+            None,
+        )
+
+        # Gazebo dynamic_pose sometimes exposes a world-space model pose plus a
+        # zero local base_link pose. Prefer the model pose in that case.
+        if (
+            exact_model is not None
+            and exact_base is not None
+            and _is_identity_like_transform(exact_base)
+            and not _is_identity_like_transform(exact_model)
+        ):
+            return exact_model
+
         return best
+
+    @staticmethod
+    def _describe_transforms(transforms: Sequence[TransformStamped], limit: int = 8) -> str:
+        if not transforms:
+            return "[]"
+
+        parts = []
+        for tfm in transforms[:limit]:
+            parts.append(
+                f"{tfm.header.frame_id}->{tfm.child_frame_id}"
+            )
+        if len(transforms) > limit:
+            parts.append(f"...(+{len(transforms) - limit} more)")
+        return "[" + ", ".join(parts) + "]"
 
     def _on_pose_tf(self, msg: TFMessage) -> None:
         if not self.context.ok():
+            return
+
+        if not msg.transforms:
             return
 
         tf_sel = self._select_transform(msg.transforms)
@@ -184,7 +253,9 @@ class GzPoseToOdom(Node):
             now_sec = self.get_clock().now().nanoseconds * 1e-9
             if now_sec - self._last_debug_sec > 2.0:
                 self.get_logger().warn(
-                    "dynamic_pose TF received but no transform matched model/base hints."
+                    "dynamic_pose TF received but no transform matched model/base hints. "
+                    f"model='{self._model_name}' base='{self._base_frame}' "
+                    f"candidates={self._describe_transforms(msg.transforms)}"
                 )
                 self._last_debug_sec = now_sec
             return
@@ -226,9 +297,13 @@ class GzPoseToOdom(Node):
 
         self._prev_sample = sample
 
-        # Avoid dual-source odom when a real source already exists.
-        # count_publishers() includes this node itself after first publish.
-        if self._publish_only_when_no_external_odom:
+        # Prefer forwarded Gazebo odom when it is available and fresh.
+        if self._has_fresh_external_odom():
+            return
+
+        # Backward-compatible safeguard for older launch files that still wire
+        # another publisher directly onto the same odom topic.
+        if self._publish_only_when_no_external_odom and not self._external_odom_topic:
             if self.count_publishers(self._odom_topic) > 1:
                 return
 
@@ -255,8 +330,21 @@ class GzPoseToOdom(Node):
         odom.twist.twist.angular.y = float(w_world[1])
         odom.twist.twist.angular.z = float(w_world[2])
 
+        self._publish_odom(odom)
+
+    def _on_external_odom(self, msg: Odometry) -> None:
+        self._last_external_odom_sec = self.get_clock().now().nanoseconds * 1e-9
+        self._publish_odom(msg)
+
+    def _has_fresh_external_odom(self) -> bool:
+        if self._last_external_odom_sec is None:
+            return False
+        now_sec = self.get_clock().now().nanoseconds * 1e-9
+        return (now_sec - self._last_external_odom_sec) <= self._external_odom_timeout_sec
+
+    def _publish_odom(self, msg: Odometry) -> None:
         try:
-            self._odom_pub.publish(odom)
+            self._odom_pub.publish(msg)
         except Exception:
             # During shutdown, context can become invalid between callback and publish.
             return

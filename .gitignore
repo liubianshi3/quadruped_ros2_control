@@ -18,3 +18,7 @@ __pycache__/
 .vscode/
 .idea/
 .DS_Store
+.Trash-1000/
+.codex
+.codex/
+archives/

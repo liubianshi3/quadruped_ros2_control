@@ -1,0 +1,16 @@
+topics:
+  cmd_vel: /cmd_vel
+  odom: /odom
+  estimator_robot_state: /dog2/state_estimation/robot_state
+  estimator_contact_state: /dog2/state_estimation/contact_state
+  estimator_odom: /dog2/state_estimation/odom
+  mpc_foot_forces: /dog2/mpc/foot_forces
+  mpc_grf_reference: /dog2/mpc/grf_reference
+  mpc_debug: /dog2/mpc/debug
+  wbc_joint_effort_command: /dog2/wbc/joint_effort_command
+  wbc_debug: /dog2/wbc/debug
+
+frames:
+  world: world
+  odom: odom
+  base: base_link

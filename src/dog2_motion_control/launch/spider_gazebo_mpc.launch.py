@@ -12,6 +12,7 @@ Dog2 effort-mode + MPC 架构分支启动文件（双路架构中的 mpc 分支�
 import os
 import struct
 import xml.etree.ElementTree as ET
+from pathlib import Path
 
 import numpy as np
 import yaml
@@ -70,6 +71,36 @@ def _resolve_mesh_path(mesh_filename, urdf_dir, package_share_cache):
         return mesh_filename
 
     return os.path.normpath(os.path.join(urdf_dir, mesh_filename))
+
+
+def _prefer_workspace_package_dir(package_name: str, installed_share_dir: str) -> str:
+    share_path = Path(installed_share_dir).resolve()
+    try:
+        workspace_root = share_path.parents[3]
+    except IndexError:
+        return installed_share_dir
+
+    source_dir = workspace_root / "src" / package_name
+    if source_dir.is_dir():
+        return str(source_dir)
+    return installed_share_dir
+
+
+def _collect_gz_resource_roots(*package_dirs: str) -> str:
+    roots = []
+    for package_dir in package_dirs:
+        if not package_dir:
+            continue
+        resource_root = str(Path(package_dir).resolve().parent)
+        if resource_root not in roots:
+            roots.append(resource_root)
+
+    existing = os.environ.get("GZ_SIM_RESOURCE_PATH", "")
+    for resource_root in existing.split(":"):
+        if resource_root and resource_root not in roots:
+            roots.append(resource_root)
+
+    return ":".join(roots)
 
 
 def _load_stl_vertices(mesh_path, mesh_vertices_cache):
@@ -200,8 +231,10 @@ def _estimate_min_collision_z(robot_description_xml, pin_model, pin_data, urdf_d
 
 
 def generate_launch_description():
-    pkg_dog2_description = get_package_share_directory("dog2_description")
-    pkg_dog2_motion_control = get_package_share_directory("dog2_motion_control")
+    pkg_dog2_description_install = get_package_share_directory("dog2_description")
+    pkg_dog2_motion_control_install = get_package_share_directory("dog2_motion_control")
+    pkg_dog2_description = _prefer_workspace_package_dir("dog2_description", pkg_dog2_description_install)
+    pkg_dog2_motion_control = _prefer_workspace_package_dir("dog2_motion_control", pkg_dog2_motion_control_install)
     pkg_gazebo_ros = get_package_share_directory("ros_gz_sim")
 
     config_file_arg = DeclareLaunchArgument(
@@ -317,6 +350,7 @@ def generate_launch_description():
         controller_manager_name = LaunchConfiguration("controller_manager_name").perform(context)
         odom_gz_topic = LaunchConfiguration("odom_gz_topic").perform(context)
         odom_topic = LaunchConfiguration("odom_topic").perform(context)
+        external_odom_topic = f"{odom_topic}_external"
         dynamic_pose_gz_topic = LaunchConfiguration("dynamic_pose_gz_topic").perform(context)
         dynamic_pose_ros_topic = LaunchConfiguration("dynamic_pose_ros_topic").perform(context)
         model_name = LaunchConfiguration("model_name").perform(context)
@@ -331,13 +365,9 @@ def generate_launch_description():
         spawn_z_margin = float(LaunchConfiguration("spawn_z_margin").perform(context))
 
         # 设置 Gazebo 模型路径环境变量
-        gazebo_model_path = os.path.join(pkg_dog2_description, "..")
-        if "GZ_SIM_RESOURCE_PATH" in os.environ:
-            gazebo_model_path = os.environ["GZ_SIM_RESOURCE_PATH"] + ":" + gazebo_model_path
-
         set_gazebo_model_path = SetEnvironmentVariable(
             name="GZ_SIM_RESOURCE_PATH",
-            value=gazebo_model_path,
+            value=_collect_gz_resource_roots(pkg_dog2_description, pkg_dog2_description_install),
         )
 
         # === 关键 2：xacro 生成 robot_description 传入 control_mode:=effort ===
@@ -520,7 +550,7 @@ def generate_launch_description():
                 f"{odom_gz_topic}@nav_msgs/msg/Odometry[gz.msgs.Odometry",
             ],
             remappings=[
-                (odom_gz_topic, odom_topic),
+                (odom_gz_topic, external_odom_topic),
             ],
             output="screen",
             condition=IfCondition(LaunchConfiguration("use_gz_odom_bridge")),
@@ -549,10 +579,11 @@ def generate_launch_description():
                 {
                     "pose_topic": dynamic_pose_ros_topic,
                     "odom_topic": odom_topic,
+                    "external_odom_topic": external_odom_topic,
                     "model_name": model_name,
                     "odom_frame": "odom",
                     "base_frame": "base_link",
-                    "publish_only_when_no_external_odom": False,
+                    "publish_only_when_no_external_odom": True,
                 }
             ],
         )

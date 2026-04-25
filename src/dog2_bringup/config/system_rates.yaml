@@ -1,0 +1,8 @@
+system:
+  gazebo_physics_hz: 1000
+  controller_update_hz: 100
+  state_estimation_hz: 100
+  motion_control_hz: 50
+  mpc_hz: 20
+  wbc_hz: 20
+  visualization_hz: 20

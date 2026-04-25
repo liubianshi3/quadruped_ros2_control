@@ -1,5 +1,31 @@
 # DEVELOPMENT_LOG
 
+## 2026-04-19 17:03 xacro 语义收口、side/profile 宏化与最终验收
+
+- **本轮目标**
+  - 继续按“先保控制不回归，再提可读性”的原则，对 `dog2_description/urdf/dog2.urdf.xacro` 做收口式重构。
+  - 目标不是把文件写短，而是把腿链整理成：`base/trunk` 公共层、统一语义的 leg macro、以及每条腿只保留参数不保留逻辑分支。
+
+- **URDF / xacro 重构结果**
+  - `leg` 宏接口新增 `side=left/right`，四条腿实例化显式传入 side，替代原先按 `prefix == lf/lh/rh/rf` 的分支写法。
+  - `hip_rpy` 从宏参数中移除，coxa 语义改为由 `coxa_axis_fixed_rpy_left/right` 与 `coxa_pose_fixed_rpy_left/right` 两组常量承接。
+  - `femur` / `tibia` 统一收敛为显式的 `*_axis_frame -> *_joint -> *_pose_fixed` 结构，去掉“默认路径 + 条件覆盖”的伪双路径。
+  - 保留了真实机械差异：`lh/rf hip_xyz`、`leg_knee_xyz_R`、`rf` femur mesh/collision flip 等仍留在参数 / 几何层。
+  - 清理了冗余历史注释块，使主 xacro 更接近当前权威语义说明。
+
+- **控制语义对齐**
+  - `dog2_motion_control/dog2_motion_control/joint_semantics.py` 保持与 xacro 的统一契约：`rail` 为 +X，`coxa` 为 -Z，`femur/tibia` 为 -Y。
+  - 未发现新的腿级 sign patch、right-leg correction 或旧的 base/root 补偿残留。
+
+- **验证与环境修复**
+  - 先前在 zsh 中直接 source colcon 生成的 bash setup 链会导致 workspace overlay 解析异常；切换到 bash 后，`source /opt/ros/humble/setup.bash` + `source install/setup.bash` 可以正常工作。
+  - 在 bash 环境下成功执行 `xacro src/dog2_description/urdf/dog2.urdf.xacro > /tmp/dog2.urdf`，`/tmp/dog2.urdf` 生成成功且非空。
+  - 通过 `grep`/脚本检查确认展开后的 URDF 包含四条腿一致的 `*_coxa_joint`、`*_femur_axis_fixed`、`*_femur_pose_fixed`、`*_tibia_axis_fixed`、`*_tibia_pose_fixed`、`*_foot_fixed` 结构。
+
+- **当前结论**
+  - 这版 xacro 已进入“可收口”状态：结构上收口，语义上对齐，控制栈未发现旧腿级补偿残留。
+  - 后续如继续优化，建议只做低风险收尾，例如清理测试脚本中的重复函数定义，而不再扩大 xacro 结构改动面。
+
 ## 2026-04-12 20:03 URDF/xacro 文档与腿链分层：关节语义、惯性注释、Phase 1 几何下沉与 Phase 2 回滚
 
 - **dog2_description / `dog2.urdf.xacro`**

@@ -7,9 +7,10 @@ SlidingConstraints::SlidingConstraints()
       epsilon_sym_(0.02),
       enable_symmetry_(true),
       enable_coordination_(true) {
-    // Dog2滑动副位置限位（来自URDF）
-    d_min_ << -0.111, -0.008, -0.008, -0.111;  // j1, j2, j3, j4
-    d_max_ << 0.008, 0.111, 0.111, 0.008;
+    // Canonical rail limits from dog2.urdf.xacro:
+    // lf/rh in [0.0, 0.111], lh/rf in [-0.111, 0.0].
+    d_min_ << 0.0, -0.111, 0.0, -0.111;
+    d_max_ << 0.111, 0.0, 0.111, 0.0;
 }
 
 void SlidingConstraints::setPositionLimits(const Eigen::Vector4d& lower,

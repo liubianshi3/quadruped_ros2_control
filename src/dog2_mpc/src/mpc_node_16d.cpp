@@ -187,13 +187,13 @@ private:
         Eigen::Vector4d sliding_positions = Eigen::Vector4d::Zero();
         
         for (size_t i = 0; i < msg->name.size(); ++i) {
-            if (msg->name[i] == "j1") {
+            if (msg->name[i] == "j1" || msg->name[i] == "lf_rail_joint") {
                 sliding_positions(0) = msg->position[i];
-            } else if (msg->name[i] == "j2") {
+            } else if (msg->name[i] == "j2" || msg->name[i] == "lh_rail_joint") {
                 sliding_positions(1) = msg->position[i];
-            } else if (msg->name[i] == "j3") {
+            } else if (msg->name[i] == "j3" || msg->name[i] == "rh_rail_joint") {
                 sliding_positions(2) = msg->position[i];
-            } else if (msg->name[i] == "j4") {
+            } else if (msg->name[i] == "j4" || msg->name[i] == "rf_rail_joint") {
                 sliding_positions(3) = msg->position[i];
             }
         }

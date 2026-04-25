@@ -20,6 +20,7 @@ ros2 launch dog2_motion_control spider_gazebo_complete.launch.py
 
 import os
 import xml.etree.ElementTree as ET
+from pathlib import Path
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import (
@@ -57,12 +58,44 @@ def _resolve_world_name(world_path: str) -> str:
     return "empty"
 
 
+def _prefer_workspace_package_dir(package_name: str, installed_share_dir: str) -> str:
+    share_path = Path(installed_share_dir).resolve()
+    try:
+        workspace_root = share_path.parents[3]
+    except IndexError:
+        return installed_share_dir
+
+    source_dir = workspace_root / "src" / package_name
+    if source_dir.is_dir():
+        return str(source_dir)
+    return installed_share_dir
+
+
+def _collect_gz_resource_roots(*package_dirs: str) -> str:
+    roots = []
+    for package_dir in package_dirs:
+        if not package_dir:
+            continue
+        resource_root = str(Path(package_dir).resolve().parent)
+        if resource_root not in roots:
+            roots.append(resource_root)
+
+    existing = os.environ.get("GZ_SIM_RESOURCE_PATH", "")
+    for resource_root in existing.split(":"):
+        if resource_root and resource_root not in roots:
+            roots.append(resource_root)
+
+    return ":".join(roots)
+
+
 def generate_launch_description():
     """生成启动描述"""
     
     # 获取包路径
-    pkg_dog2_description = get_package_share_directory('dog2_description')
-    pkg_dog2_motion_control = get_package_share_directory('dog2_motion_control')
+    pkg_dog2_description_install = get_package_share_directory('dog2_description')
+    pkg_dog2_motion_control_install = get_package_share_directory('dog2_motion_control')
+    pkg_dog2_description = _prefer_workspace_package_dir('dog2_description', pkg_dog2_description_install)
+    pkg_dog2_motion_control = _prefer_workspace_package_dir('dog2_motion_control', pkg_dog2_motion_control_install)
     pkg_gazebo_ros = get_package_share_directory('ros_gz_sim')
     
     # 声明启动参数
@@ -122,13 +155,9 @@ def generate_launch_description():
         world_name = _resolve_world_name(world_path)
 
         # 设置Gazebo模型路径环境变量
-        gazebo_model_path = os.path.join(pkg_dog2_description, '..')
-        if 'GZ_SIM_RESOURCE_PATH' in os.environ:
-            gazebo_model_path = os.environ['GZ_SIM_RESOURCE_PATH'] + ':' + gazebo_model_path
-
         set_gazebo_model_path = SetEnvironmentVariable(
             name='GZ_SIM_RESOURCE_PATH',
-            value=gazebo_model_path
+            value=_collect_gz_resource_roots(pkg_dog2_description, pkg_dog2_description_install)
         )
 
         # 处理xacro文件生成URDF

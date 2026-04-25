@@ -1,0 +1,14 @@
+dog2_state_estimator:
+  ros__parameters:
+    use_sim_time: true
+    odom_topic: /odom
+    joint_state_topic: /joint_states
+    imu_topic: /imu/data
+    robot_state_topic: /dog2/state_estimation/robot_state
+    contact_state_topic: /dog2/state_estimation/contact_state
+    filtered_joint_state_topic: /dog2/state_estimation/joint_states
+    output_odom_topic: /dog2/state_estimation/odom
+    update_rate: 100.0
+    contact_strategy: all_true
+    estimator_mode: sim_ground_truth
+    source: gazebo_ground_truth

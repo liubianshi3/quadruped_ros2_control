@@ -1,0 +1,56 @@
+dog2_smoke_check:
+  ros__parameters:
+    required_topics:
+      - /clock
+      - /joint_states
+      - /odom
+      - /dog2/state_estimation/odom
+      - /dog2/state_estimation/robot_state
+      - /dog2/state_estimation/contact_state
+      - /dog2/gait/contact_phase
+      - /dog2/gait/command
+    required_research_topics:
+      - /dog2/mpc/debug
+      - /dog2/mpc/foot_forces
+      - /dog2/wbc/debug
+      - /dog2/wbc/joint_effort_command
+      - /dog2/wbc/rail_effort_command
+      - /effort_controller/commands
+    required_nodes:
+      - robot_state_publisher
+      - dog2_state_estimator
+    required_research_nodes:
+      - mpc_node_complete
+      - wbc_node_complete
+      - dog2_mpc_debug_adapter
+      - dog2_wbc_debug_adapter
+      - dog2_wbc_effort_mux
+    required_controllers:
+      - joint_state_broadcaster
+    required_research_controllers:
+      - effort_controller
+    exercise_motion: false
+    cmd_vel_topic: /cmd_vel
+    odom_topic: /dog2/state_estimation/odom
+    robot_state_topic: /dog2/state_estimation/robot_state
+    mpc_debug_topic: /dog2/mpc/debug
+    wbc_debug_topic: /dog2/wbc/debug
+    foot_force_topic: /dog2/mpc/foot_forces
+    joint_effort_topic: /dog2/wbc/joint_effort_command
+    rail_effort_topic: /dog2/wbc/rail_effort_command
+    timeout_sec: 120.0
+    freshness_timeout_sec: 2.0
+    poll_period_sec: 0.1
+    stand_duration_sec: 3.0
+    forward_duration_sec: 4.0
+    turn_duration_sec: 5.0
+    forward_linear_x: 0.12
+    turn_linear_x: 0.05
+    turn_angular_z: 0.35
+    stand_max_xy_drift_m: 0.20
+    enforce_stand_drift: false
+    body_height_min_m: 0.04
+    body_height_max_m: 0.25
+    forward_min_distance_m: 0.10
+    turn_min_yaw_delta_rad: 0.25
+    result_file: /tmp/dog2_smoke_result.txt
