@@ -20,7 +20,6 @@ from .joint_names import (
     get_joint_name,
     get_rail_joint_name,
 )
-from .leg_parameters import LEG_PARAMETERS
 
 
 class JointController:
@@ -28,6 +27,16 @@ class JointController:
 
     def __init__(self, node: Node):
         self.node = node
+
+        raw_model_variant = str(
+            node.declare_parameter("model_variant", "real").value
+        )
+        from .model_variant import normalize_model_variant, get_leg_parameters
+        self._model_variant = normalize_model_variant(raw_model_variant)
+        self.leg_parameters = get_leg_parameters(self._model_variant)
+        self.node.get_logger().info(
+            f"JointController using model_variant='{self._model_variant}'"
+        )
 
         self._revolute_controller_topic = str(
             node.declare_parameter(
@@ -127,7 +136,7 @@ class JointController:
             
             for leg_num in (1, 2, 3, 4):
                 prefix = LEG_PREFIX_MAP[leg_num]
-                leg_params = LEG_PARAMETERS[prefix]
+                leg_params = self.leg_parameters[prefix]
                 
                 rail_joint = get_rail_joint_name(leg_num)
                 self.joint_limits[rail_joint] = leg_params.joint_limits["rail"]
@@ -213,14 +222,12 @@ class JointController:
         )
 
     def reload_joint_limits(self) -> None:
-        """从 LEG_PARAMETERS 刷新关节限位映射表。
-
-        当前阶段 LEG_PARAMETERS 会由 dog2 xacro/URDF 同步生成；
-        当模型更新后，可调用该方法在不重启节点的情况下刷新 clamp 范围。
-        """
+        """从当前 leg_parameters 源刷新关节限位映射表。"""
         try:
             self._load_joint_limits()
-            self.node.get_logger().info("Joint limits reloaded from LEG_PARAMETERS.")
+            self.node.get_logger().info(
+                f"Joint limits reloaded (model_variant='{self._model_variant}')."
+            )
         except Exception as e:
             self.node.get_logger().error(f"Failed to reload joint limits: {e}")
     

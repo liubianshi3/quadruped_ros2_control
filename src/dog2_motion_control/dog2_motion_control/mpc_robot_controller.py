@@ -639,11 +639,23 @@ class MPCRobotController(Node):
         # - Otherwise, we prefer expanding the canonical xacro file (guarantees joint names
         #   like lf_rail_joint/... are present) and build from the resulting URDF XML.
         # - `urdf_path` is kept as an explicit override for pre-expanded URDF snapshots.
+        # - `model_variant` selects "real" (dog2.urdf.xacro) or "symmetric"
+        #   (dog2_symmetric.urdf.xacro).  If `urdf_xacro_path` is explicitly set,
+        #   it takes precedence over model_variant.
         default_urdf_path = ""
+
+        from .model_variant import normalize_model_variant, get_urdf_xacro_filename
+
+        raw_model_variant = str(
+            self.declare_parameter("model_variant", "real").value
+        ).strip()
+        self._model_variant = normalize_model_variant(raw_model_variant)
+        self.get_logger().info(f"MPC controller model_variant='{self._model_variant}'")
+
         default_urdf_xacro_path = os.path.join(
             get_package_share_directory("dog2_description"),
             "urdf",
-            "dog2.urdf.xacro",
+            get_urdf_xacro_filename(self._model_variant),
         )
         default_controllers_yaml_path = os.path.join(
             get_package_share_directory("dog2_motion_control"),

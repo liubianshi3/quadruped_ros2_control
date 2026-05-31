@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
 
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
+from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, OpaqueFunction
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import Command, LaunchConfiguration, PathJoinSubstitution
 from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
 from launch_ros.substitutions import FindPackageShare
+
+from dog2_motion_control.model_variant import get_urdf_xacro_filename
 
 
 def generate_launch_description():
@@ -15,10 +17,16 @@ def generate_launch_description():
     control_param_file = PathJoinSubstitution(
         [FindPackageShare("dog2_mpc"), "config", "dog2_ctrl_params.yaml"]
     )
-    xacro_file = PathJoinSubstitution(
-        [FindPackageShare("dog2_description"), "urdf", "dog2.urdf.xacro"]
-    )
-    robot_description = ParameterValue(Command(["xacro ", xacro_file]), value_type=str)
+
+    def _xacro_file(context):
+        variant = LaunchConfiguration("model_variant").perform(context).strip() or "real"
+        from dog2_motion_control.model_variant import normalize_model_variant
+        variant = normalize_model_variant(variant)
+        return PathJoinSubstitution(
+            [FindPackageShare("dog2_description"), "urdf", get_urdf_xacro_filename(variant)]
+        ).perform(context)
+
+    robot_description = ParameterValue(Command(["xacro ", _xacro_file]), value_type=str)
 
     gazebo_launch = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
@@ -65,6 +73,7 @@ def generate_launch_description():
         [
             DeclareLaunchArgument("mode", default_value="hover"),
             DeclareLaunchArgument("use_sim_time", default_value="true"),
+            DeclareLaunchArgument("model_variant", default_value="real"),
             gazebo_launch,
             robot_state_publisher,
             spawn_entity,

@@ -11,8 +11,9 @@ ros2 launch dog2_motion_control spider_fortress_simple.launch.py
 import os
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import ExecuteProcess, RegisterEventHandler, TimerAction
+from launch.actions import ExecuteProcess, RegisterEventHandler, TimerAction, DeclareLaunchArgument
 from launch.event_handlers import OnProcessExit
+from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 import xacro
 
@@ -27,11 +28,16 @@ def generate_launch_description():
     # 配置文件路径
     controllers_yaml = os.path.join(pkg_dog2_description, 'config', 'ros2_controllers.yaml')
     config_file = os.path.join(pkg_dog2_motion_control, 'config', 'gait_params.yaml')
+
+    def _resolve_xacro_file(context):
+        variant = LaunchConfiguration('model_variant').perform(context).strip()
+        from dog2_motion_control.model_variant import normalize_model_variant, get_urdf_xacro_filename
+        variant = normalize_model_variant(variant or "real")
+        return os.path.join(pkg_dog2_description, 'urdf', get_urdf_xacro_filename(variant))
     
     # 处理xacro文件生成URDF
-    xacro_file = os.path.join(pkg_dog2_description, 'urdf', 'dog2.urdf.xacro')
     robot_description_config = xacro.process_file(
-        xacro_file,
+        _resolve_xacro_file,
         mappings={'controllers_yaml': controllers_yaml},
     )
     robot_description = {'robot_description': robot_description_config.toxml()}
@@ -145,6 +151,7 @@ def generate_launch_description():
     )
     
     return LaunchDescription([
+        DeclareLaunchArgument("model_variant", default_value="real"),
         # 启动Robot State Publisher
         robot_state_publisher,
         

@@ -374,9 +374,13 @@ class KinematicsSolver:
         return (float(pos_global[0]), float(pos_global[1]), float(pos_global[2]))
 
 
-def create_kinematics_solver() -> KinematicsSolver:
-    from .leg_parameters import LEG_PARAMETERS
-    return KinematicsSolver(LEG_PARAMETERS)
+def create_kinematics_solver(model_variant: str = "real") -> KinematicsSolver:
+    from .model_variant import get_leg_parameters
+    return KinematicsSolver(get_leg_parameters(model_variant))
+
+
+def create_symmetric_kinematics_solver() -> KinematicsSolver:
+    return create_kinematics_solver(model_variant="symmetric")
 
 
 if __name__ == '__main__':
