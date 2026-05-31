@@ -22,22 +22,34 @@
 
 ### launch 中选择 symmetric 模型
 
-```bash
-# real（默认）
-robot_description=$(xacro .../dog2.urdf.xacro)
+所有核心 launch 已支持 `model_variant` 参数，默认值为 `"real"`：
 
-# symmetric
-robot_description=$(xacro .../dog2_symmetric.urdf.xacro)
+```bash
+# symmetric 仿真
+ros2 launch dog2_mpc complete_simulation.launch.py model_variant:=symmetric
+ros2 launch dog2_mpc mpc_wbc_simulation.launch.py model_variant:=symmetric
+ros2 launch dog2_mpc simple_crossing_sim.launch.py model_variant:=symmetric
+ros2 launch dog2_motion_control spider_gazebo_mpc.launch.py model_variant:=symmetric
+ros2 launch dog2_motion_control spider_gazebo_complete.launch.py model_variant:=symmetric
+ros2 launch dog2_motion_control spider_fortress_simple.launch.py model_variant:=symmetric
+ros2 launch dog2_motion_control spider_gazebo_position.launch.py model_variant:=symmetric
+ros2 launch dog2_bringup control_stack.launch.py model_variant:=symmetric
+ros2 launch dog2_bringup effort_research_sim.launch.py model_variant:=symmetric
 ```
 
 ### Python 控制模块中选择 symmetric 参数
 
 ```python
-# real（默认）
-from dog2_motion_control.leg_parameters import LEG_PARAMETERS
+from dog2_motion_control.model_variant import get_leg_parameters
 
-# symmetric
-from dog2_motion_control.leg_parameters_symmetric import LEG_PARAMETERS_SYMMETRIC
+params = get_leg_parameters("symmetric")   # LEG_PARAMETERS_SYMMETRIC
+params = get_leg_parameters("real")        # LEG_PARAMETERS (默认)
+```
+
+```python
+from dog2_motion_control.kinematics_solver import create_kinematics_solver
+
+solver = create_kinematics_solver(model_variant="symmetric")
 ```
 
 ### 重要约束
