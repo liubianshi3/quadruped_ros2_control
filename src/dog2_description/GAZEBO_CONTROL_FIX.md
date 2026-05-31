@@ -2,8 +2,8 @@
 
 ## Current Rule
 
-The authoritative Gazebo control plugin configuration lives only in [`urdf/dog2.urdf.xacro`](./urdf/dog2.urdf.xacro).
-Launch files expand that xacro directly into `robot_description`; the repository no longer carries a committed static `dog2.urdf` snapshot as a second source of truth.
+The authoritative Gazebo control plugin configuration lives in [`urdf/dog2_ros2_control.xacro`](./urdf/dog2_ros2_control.xacro), which is included by the entry-point [`urdf/dog2.urdf.xacro`](./urdf/dog2.urdf.xacro).
+Launch files expand `dog2.urdf.xacro` directly into `robot_description`; the repository no longer carries a committed static `dog2.urdf` snapshot as a second source of truth.
 
 ## Canonical Plugin Block
 
@@ -33,6 +33,7 @@ xacro src/dog2_description/urdf/dog2.urdf.xacro \
 
 ## Related Files
 
-- `src/dog2_description/urdf/dog2.urdf.xacro`
+- `src/dog2_description/urdf/dog2_ros2_control.xacro` — plugin block source
+- `src/dog2_description/urdf/dog2.urdf.xacro` — entry-point that includes `dog2_ros2_control.xacro`
 - `src/dog2_description/config/ros2_controllers.yaml`
 - launch files that populate `robot_description` from xacro

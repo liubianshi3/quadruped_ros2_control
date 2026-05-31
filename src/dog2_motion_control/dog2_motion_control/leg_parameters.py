@@ -3,7 +3,7 @@
 
 定义机器人腿部的几何参数、关节限位和坐标系转换信息
 
-腿链拓扑与 base_link 语义轴以 dog2_description/urdf/dog2.urdf.xacro 中
+腿链拓扑与 base_link 语义轴以 dog2_description/urdf/dog2_leg_macro.xacro 中
 「Leg kinematic contract」注释块为准；变更 URDF 后运行
 dog2_description/scripts/check_joint_semantics.py。
 """

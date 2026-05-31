@@ -1,0 +1,47 @@
+<?xml version="1.0"?>
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro">
+  <!-- This helper removes duplicated interface boilerplate only.
+       It must not change which joints are exposed to ros2_control. -->
+  <xacro:macro name="dog2_control_joint" params="name">
+    <joint name="${name}">
+      <command_interface name="position"/>
+      <command_interface name="effort"/>
+      <state_interface name="position"/>
+      <state_interface name="velocity"/>
+    </joint>
+  </xacro:macro>
+
+  <xacro:macro name="dog2_ros2_control" params="controllers_yaml">
+    <!-- ROS 2 Control -->
+    <ros2_control name="GazeboSimSystem" type="system">
+      <hardware>
+        <plugin>gz_ros2_control/GazeboSimSystem</plugin>
+      </hardware>
+      <xacro:dog2_control_joint name="lf_rail_joint"/>
+      <xacro:dog2_control_joint name="lf_coxa_joint"/>
+      <xacro:dog2_control_joint name="lf_femur_joint"/>
+      <xacro:dog2_control_joint name="lf_tibia_joint"/>
+      <xacro:dog2_control_joint name="lh_rail_joint"/>
+      <xacro:dog2_control_joint name="lh_coxa_joint"/>
+      <xacro:dog2_control_joint name="lh_femur_joint"/>
+      <xacro:dog2_control_joint name="lh_tibia_joint"/>
+      <xacro:dog2_control_joint name="rh_rail_joint"/>
+      <xacro:dog2_control_joint name="rh_coxa_joint"/>
+      <xacro:dog2_control_joint name="rh_femur_joint"/>
+      <xacro:dog2_control_joint name="rh_tibia_joint"/>
+      <xacro:dog2_control_joint name="rf_rail_joint"/>
+      <xacro:dog2_control_joint name="rf_coxa_joint"/>
+      <xacro:dog2_control_joint name="rf_femur_joint"/>
+      <xacro:dog2_control_joint name="rf_tibia_joint"/>
+    </ros2_control>
+
+    <gazebo>
+      <plugin filename="libgz_ros2_control-system.so" name="gz_ros2_control::GazeboSimROS2ControlPlugin">
+        <parameters>${controllers_yaml}</parameters>
+        <robot_param>robot_description</robot_param>
+        <robot_param_node>robot_state_publisher</robot_param_node>
+      </plugin>
+    </gazebo>
+  </xacro:macro>
+
+</robot>

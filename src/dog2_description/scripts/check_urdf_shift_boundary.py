@@ -4,7 +4,7 @@
 Validate current base-link / trunk / leg-mount boundary invariants for dog2.
 
 This script enforces the rule that:
-  - legacy `urdf_shift_*` bookkeeping is not present in the xacro source
+  - legacy `urdf_shift_*` bookkeeping is not present in the xacro sources
   - `base_link` is the only URDF root and carries trunk inertial/collision/visual
   - legacy `base_footprint` / `base_offset_joint` / `base_link_cad` frames are absent
   - leg installation is expressed via `*_leg_mount_fixed` under `base_link`
@@ -105,9 +105,17 @@ def run_xacro_to_urdf(xacro_path: Path) -> Path:
 
 
 def assert_no_legacy_shift_tokens(xacro_path: Path) -> None:
-    source = xacro_path.read_text(encoding="utf-8")
-    if re.search(r'name="urdf_shift_[^"]+"', source) or "${urdf_shift_" in source:
-        fail("Legacy urdf_shift_* properties/expressions are still present in the xacro source")
+    xacro_sources = sorted(xacro_path.parent.glob("*.xacro"))
+    if xacro_path not in xacro_sources:
+        xacro_sources.append(xacro_path)
+
+    for source_path in xacro_sources:
+        source = source_path.read_text(encoding="utf-8")
+        if re.search(r'name="urdf_shift_[^"]+"', source) or "${urdf_shift_" in source:
+            fail(
+                "Legacy urdf_shift_* properties/expressions are still present "
+                f"in xacro source: {source_path}"
+            )
 
 
 def get_joint_origin(robot: ET.Element, joint_name: str) -> tuple[float, float, float]:

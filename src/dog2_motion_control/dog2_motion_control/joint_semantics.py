@@ -4,7 +4,7 @@ This module centralizes the local-axis and fixed-origin conventions that the
 URDF and motion-control geometry are expected to share.
 
 **Authoritative topology description** lives in the xacro comment block
-``Leg kinematic contract`` inside ``dog2_description/urdf/dog2.urdf.xacro``
+``Leg kinematic contract`` inside ``dog2_description/urdf/dog2_leg_macro.xacro``
 (P – R_z – R_y – R_y: rail +q along base_link +X; at q=0, coxa +q is yaw about
 base_link −Z; femur and tibia +q are pitch about base_link −Y, parallel at nominal pose).
 
@@ -29,7 +29,7 @@ FEMUR_ORIGIN_RPY = np.array([HALF_PI, HALF_PI, 0.0], dtype=float)
 TIBIA_ORIGIN_RPY = np.array([0.0, 0.0, 0.0], dtype=float)
 
 # Unit axes in each joint’s URDF joint frame (same strings as <axis xyz> in
-# dog2.urdf.xacro). KinematicsSolver composes them after fixed origins; base
+# dog2_leg_macro.xacro). KinematicsSolver composes them after fixed origins; base
 # semantics are documented in the xacro “Leg kinematic contract” block.
 JOINT_AXIS_LOCAL = {
     "rail": np.array([1.0, 0.0, 0.0], dtype=float),

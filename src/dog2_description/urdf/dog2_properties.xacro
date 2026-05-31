@@ -1,0 +1,125 @@
+<?xml version="1.0"?>
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro">
+  <!--
+    Joint limits (authoritative for RViz, IK, runtime clamping).
+    femur_joint and tibia_joint are distinct pitch DOFs: each has its own lower/upper/effort/velocity.
+  -->
+  <xacro:property name="coxa_lower_limit" value="-2.618"/>
+  <xacro:property name="coxa_upper_limit" value="2.618"/>
+  <xacro:property name="coxa_effort" value="50"/>
+  <xacro:property name="coxa_velocity" value="20"/>
+  <xacro:property name="femur_lower_limit" value="-2.8"/>
+  <xacro:property name="femur_upper_limit" value="2.8"/>
+  <xacro:property name="femur_effort" value="50"/>
+  <xacro:property name="femur_velocity" value="20"/>
+  <xacro:property name="tibia_lower_limit" value="-2.8"/>
+  <xacro:property name="tibia_upper_limit" value="2.8"/>
+  <xacro:property name="tibia_effort" value="50"/>
+  <xacro:property name="tibia_velocity" value="20"/>
+  <xacro:property name="prismatic_effort" value="100"/>
+  <xacro:property name="prismatic_velocity" value="5"/>
+
+  <!-- Shared angle constants -->
+  <xacro:property name="PI_CONST" value="3.141592653589793"/>
+  <xacro:property name="half_pi" value="1.5707963267948966"/>
+
+  <!-- 左右腿镜像：rail / coxa 固定段 / femur-tibia 轴规整层由常量表达。 -->
+  <xacro:property name="leg_rail_rpy_L" value="${half_pi} 0 0"/>
+  <xacro:property name="leg_rail_rpy_R" value="${half_pi} 0 ${-PI_CONST}"/>
+  <xacro:property name="leg_rail_axis_L" value="1 0 0"/>
+  <xacro:property name="leg_rail_axis_R" value="-1 0 0"/>
+  <xacro:property name="coxa_axis_fixed_rpy_left" value="${-half_pi} 0 0"/>
+  <xacro:property name="coxa_axis_fixed_rpy_right" value="0 ${-half_pi} ${-half_pi}"/>
+  <xacro:property name="coxa_pose_fixed_rpy_left" value="0 ${-half_pi} ${half_pi}"/>
+  <xacro:property name="coxa_pose_fixed_rpy_right" value="0 ${-half_pi} 0"/>
+  <xacro:property name="leg_knee_xyz_R" value="-0.0233 -0.055 -0.0254"/>
+  <xacro:property name="leg_thigh_mesh_flip_rpy" value="0 ${PI_CONST} 0"/>
+  <!-- Right-side coxa decomposition is data-driven; preserve q=0 SE(3) if relocating mounts. -->
+
+  <!-- Joint passive dynamics (simulation stabilization) -->
+  <xacro:property name="prismatic_damping" value="0.25"/>
+  <xacro:property name="prismatic_friction" value="0.05"/>
+  <xacro:property name="hip_damping" value="0.12"/>
+  <xacro:property name="hip_friction" value="0.02"/>
+  <xacro:property name="femur_damping" value="0.15"/>
+  <xacro:property name="femur_friction" value="0.02"/>
+  <xacro:property name="tibia_damping" value="0.15"/>
+  <xacro:property name="tibia_friction" value="0.02"/>
+
+  <!-- Contact model (conservative baseline for stability) -->
+  <xacro:property name="foot_contact_mu1" value="1.0"/>
+  <xacro:property name="foot_contact_mu2" value="1.0"/>
+  <xacro:property name="foot_contact_kp" value="2.0e4"/>
+  <xacro:property name="foot_contact_kd" value="20.0"/>
+  <xacro:property name="foot_contact_min_depth" value="0.0005"/>
+  <xacro:property name="foot_contact_max_vel" value="0.2"/>
+
+  <!-- Tiny inertial block for massless frame-only links.
+       PyBullet assigns mass=1 kg to links with missing inertial data, which
+       makes these purely kinematic helper frames behave like heavy bodies in
+       dynamics. Keep this near-zero but nonzero so importers stay well-defined. -->
+  <xacro:macro name="frame_inertial" params="mass:=0.0001">
+    <inertial>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <mass value="${mass}"/>
+      <inertia ixx="1e-8" ixy="0" ixz="0" iyy="1e-8" iyz="0" izz="1e-8"/>
+    </inertial>
+  </xacro:macro>
+
+  <!-- Inertia properties -->
+  <xacro:property name="leg12_thigh_xyz" value="0.026 -0.0760041259902766 0.0649874821212071"/>
+  <xacro:property name="leg12_shin_xyz" value="0.0254901816398352 -0.143524743603395 -0.0694046953395906"/>
+  <xacro:property name="leg3_thigh_xyz" value="-0.0259999999999999 -0.0760041259902766 0.0649874821212069"/>
+  <xacro:property name="leg3_shin_xyz" value="-0.0265098183601649 -0.143524743603395 -0.0694046953395908"/>
+  <xacro:property name="leg4_thigh_xyz" value="-0.026 -0.0760041259902766 0.0649874821212069"/>
+  <xacro:property name="leg4_shin_xyz" value="-0.0265089672547710 -0.1429895138560395 -0.0691152554666486"/>
+
+  <!--
+    *_foot_tip_xyz (tibia_link): origin of *_foot_fixed — analytical foot sphere center
+    (foot_link visual / collision / inertial). X: foot_tip_lateral_inboard_m with per-leg sign;
+    Y/Z: built from foot_sphere_radius helpers plus literals in leg12_*, leg3_*, leg4_* below.
+  -->
+  <xacro:property name="foot_sphere_radius" value="0.012"/>
+  <xacro:property name="foot_tip_plus_y_half_diameter_m" value="${foot_sphere_radius}"/>
+  <xacro:property name="foot_tip_minus_y_one_and_half_diameter_m" value="${3 * foot_sphere_radius}"/>
+  <xacro:property name="foot_tip_lateral_inboard_m" value="0.024"/>
+  <xacro:property name="leg12_foot_tip_xyz" value="${foot_tip_lateral_inboard_m} ${foot_tip_plus_y_half_diameter_m - foot_tip_minus_y_one_and_half_diameter_m - 0.269179} -0.142168"/>
+  <xacro:property name="leg3_foot_tip_xyz" value="-${foot_tip_lateral_inboard_m} ${foot_tip_plus_y_half_diameter_m - foot_tip_minus_y_one_and_half_diameter_m - 0.269179} -0.142168"/>
+  <xacro:property name="leg4_foot_tip_xyz" value="-${foot_tip_lateral_inboard_m} ${foot_tip_plus_y_half_diameter_m - foot_tip_minus_y_one_and_half_diameter_m - 0.269202} -0.142121"/>
+
+  <!--
+    Semantic base root (current source-of-truth)
+    ============================================================
+    Historical urdf_shift_* bookkeeping and the fake URDF-level
+    `base_footprint` root have both been removed. `base_link` is now the only
+    URDF root for control / dynamics / leg installation.
+
+    STRICT BOUNDARY:
+      * DO NOT re-introduce urdf_shift_* or a second hidden compensation layer
+        in TF publishers, sensor extrinsics, MPC/WBC kinematics, Python config,
+        or controller code.
+      * DO NOT re-introduce a fake `base_footprint` or another fixed root
+        wrapper inside the URDF just to preserve historical naming.
+
+    MAINTENANCE RULE:
+      If a planning/ground-projection frame is needed in the future, publish a
+      runtime `base_footprint` TF outside the URDF. Keep the xacro rooted at
+      semantic `base_link` and re-baseline the guardrails and stand-geometry
+      golden only when the semantic base definition itself changes.
+  -->
+  <!-- Semantic trunk root definition: base_link is the control / dynamics / leg-install root. -->
+  <xacro:property name="base_link_semantic_origin_x" value="0.248975"/>
+  <xacro:property name="base_link_semantic_origin_y" value="0.122500"/>
+  <xacro:property name="base_link_semantic_origin_z" value="0.0"/>
+  <!-- Conservative trunk collision box derived from the legacy collision mesh bbox.
+       The upper ~1/3 is trimmed away while keeping the lower envelope unchanged. -->
+  <xacro:property name="trunk_collision_box_xyz"
+                  value="${0.243115 - base_link_semantic_origin_x} ${0.122499 - base_link_semantic_origin_y} ${-0.006837 - base_link_semantic_origin_z}"/>
+  <xacro:property name="trunk_collision_box_size" value="0.342 0.160 0.100333"/>
+
+  <xacro:property name="l1_inertia_xyz" value="-0.0159999123716776 0.000737036465389251 0.0261570925915838"/>
+  <xacro:property name="l2_inertia_xyz" value="0.0159999123716776 0.000737036465389251 0.0261570925915838"/>
+  <xacro:property name="l3_inertia_xyz" value="-0.0159999123716776 0.000737036465389251 0.0261570925915838"/>
+  <xacro:property name="l4_inertia_xyz" value="0.0159999123716776 0.000737036465389251 0.0261570925915838"/>
+
+</robot>

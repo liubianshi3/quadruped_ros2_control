@@ -2,15 +2,26 @@
 
 ## Overview
 
-`dog2_description` now treats [`urdf/dog2.urdf.xacro`](./urdf/dog2.urdf.xacro) as the only authoritative robot description source.
-Joint limits, trunk/leg topology, and Gazebo control plugin configuration should all be edited there.
+`dog2_description` treats [`urdf/dog2.urdf.xacro`](./urdf/dog2.urdf.xacro) as the **single entry-point** for robot description assembly.
+The file has been split into layers — edit each concern in its dedicated xacro file rather than the root:
+
+| Concern | File |
+|---------|------|
+| Joint limits, shared constants, contact model, base_link semantic origin, COM/inertia offsets | [`urdf/dog2_properties.xacro`](./urdf/dog2_properties.xacro) |
+| Leg topology (1P+3R kinematic contract), per-leg Gazebo contact | [`urdf/dog2_leg_macro.xacro`](./urdf/dog2_leg_macro.xacro) |
+| ros2_control joint interfaces and Gazebo control plugin | [`urdf/dog2_ros2_control.xacro`](./urdf/dog2_ros2_control.xacro) |
+
+All validation commands still target the entry-point `dog2.urdf.xacro` (which includes the three files above).
 
 A committed static `dog2.urdf` snapshot is intentionally no longer kept in the repository. When you need an expanded URDF for inspection or external tooling, export it explicitly from the xacro source.
 
 ## Source of Truth
 
-- Source: `urdf/dog2.urdf.xacro`
-- Runtime: launch files expand xacro directly into `robot_description`
+- Entry point: `urdf/dog2.urdf.xacro` (assembles includes from the three layer files above)
+- Joint limits & constants: `urdf/dog2_properties.xacro`
+- Leg topology: `urdf/dog2_leg_macro.xacro`
+- ros2_control & Gazebo plugin: `urdf/dog2_ros2_control.xacro`
+- Runtime: launch files expand `dog2.urdf.xacro` directly into `robot_description`
 - Snapshot export: run `xacro ... -o /tmp/dog2.urdf` when needed
 - Guardrails:
   - `scripts/check_urdf_shift_boundary.py`
@@ -49,7 +60,7 @@ This means:
 
 ## Modifying Joint Limits
 
-Edit the joint-limit properties near the top of [`urdf/dog2.urdf.xacro`](./urdf/dog2.urdf.xacro):
+Edit the joint-limit properties in [`urdf/dog2_properties.xacro`](./urdf/dog2_properties.xacro):
 
 ```xml
 <xacro:property name="coxa_lower_limit" value="-2.618"/>
