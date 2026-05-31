@@ -1,0 +1,112 @@
+<?xml version="1.0"?>
+<!--
+  Dog2 Symmetric Robot Description (Xacro Root)
+  Fully symmetric variant for IK/WBC/MPC simulation.
+  Differs from dog2.urdf.xacro:
+    - Leg mounts: strictly symmetric about base_link center
+    - Base_link inertial: origin at (0,0,0), pure-diagonal inertia
+    - rf hip_xyz: 0.016 (mirrored from lh), not 0.0116
+    - leg_knee_xyz_R z: -0.0274 (matches left knee magnitude)
+    - leg4 shin/foot: identical to leg3
+  Reuses dog2_leg_macro.xacro and dog2_ros2_control.xacro unchanged.
+-->
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro" name="dog2_symmetric">
+
+  <xacro:arg name="controllers_yaml" default="$(find dog2_description)/config/ros2_controllers.yaml"/>
+  <xacro:property name="controllers_yaml" value="$(arg controllers_yaml)"/>
+
+  <!-- Shared constants and tiny helper macros. -->
+  <xacro:include filename="$(find dog2_description)/urdf/dog2_symmetric_properties.xacro"/>
+
+  <!-- Trunk: base_link is the URDF / ROS / control / Pinocchio root frame.
+       symmetric: inertial at origin, pure-diagonal inertia (no cross-coupling). -->
+  <link name="base_link">
+    <inertial>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <mass value="6.0"/>
+      <inertia ixx="0.0153" ixy="0" ixz="0" iyy="0.052" iyz="0" izz="0.044"/>
+    </inertial>
+    <collision>
+      <origin xyz="${trunk_collision_box_xyz}" rpy="0 0 0"/>
+      <geometry>
+        <box size="${trunk_collision_box_size}"/>
+      </geometry>
+    </collision>
+    <visual>
+      <origin xyz="${0.0 - base_link_semantic_origin_x - 0.9780} ${0.0 - base_link_semantic_origin_y + 0.87203} -0.2649" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="package://dog2_description/meshes/base_link.STL"/>
+      </geometry>
+      <material name="mat_base_gray">
+        <color rgba="0.752941176470588 0.752941176470588 0.752941176470588 1"/>
+      </material>
+    </visual>
+  </link>
+
+  <!-- Leg topology macro. -->
+  <xacro:include filename="$(find dog2_description)/urdf/dog2_leg_macro.xacro"/>
+
+  <!-- Leg instantiations — strictly symmetric mount positions.
+       absolute CAD coords: lf=(0.12685,0.0625) lh=(0.3711,0.0625)
+                            rh=(0.3711,0.1825)   rf=(0.12685,0.1825)
+       base_link-local: ±0.122125 X, ±0.060000 Y -->
+  <link name="lf_leg_mount">
+    <xacro:frame_inertial/>
+  </link>
+  <joint name="lf_leg_mount_fixed" type="fixed">
+    <parent link="base_link"/>
+    <child link="lf_leg_mount"/>
+    <origin xyz="-0.122125 -0.060000 0" rpy="${leg_rail_rpy_L}"/>
+  </joint>
+
+  <link name="lh_leg_mount">
+    <xacro:frame_inertial/>
+  </link>
+  <joint name="lh_leg_mount_fixed" type="fixed">
+    <parent link="base_link"/>
+    <child link="lh_leg_mount"/>
+    <origin xyz="0.122125 -0.060000 0" rpy="${leg_rail_rpy_L}"/>
+  </joint>
+
+  <link name="rh_leg_mount">
+    <xacro:frame_inertial/>
+  </link>
+  <joint name="rh_leg_mount_fixed" type="fixed">
+    <parent link="base_link"/>
+    <child link="rh_leg_mount"/>
+    <origin xyz="0.122125 0.060000 0" rpy="${leg_rail_rpy_R}"/>
+  </joint>
+
+  <link name="rf_leg_mount">
+    <xacro:frame_inertial/>
+  </link>
+  <joint name="rf_leg_mount_fixed" type="fixed">
+    <parent link="base_link"/>
+    <child link="rf_leg_mount"/>
+    <origin xyz="-0.122125 0.060000 0" rpy="${leg_rail_rpy_R}"/>
+  </joint>
+
+  <xacro:leg prefix="lf" side="left" leg_num="1" parent_link="lf_leg_mount" rail_axis="${leg_rail_axis_L}" p_low="0.0" p_up="0.111"
+             thigh_xyz="${leg12_thigh_xyz}" shin_xyz="${leg12_shin_xyz}" slider_inertia_xyz="${l1_inertia_xyz}"
+             foot_tip_xyz="${leg12_foot_tip_xyz}"/>
+
+  <xacro:leg prefix="lh" side="left" leg_num="2" parent_link="lh_leg_mount" rail_axis="${leg_rail_axis_L}" p_low="-0.111" p_up="0.0"
+             thigh_xyz="${leg12_thigh_xyz}" shin_xyz="${leg12_shin_xyz}" slider_inertia_xyz="${l2_inertia_xyz}"
+             hip_xyz="0.016 0.0199 0.055"
+             foot_tip_xyz="${leg12_foot_tip_xyz}"/>
+
+  <xacro:leg prefix="rh" side="right" leg_num="3" parent_link="rh_leg_mount" rail_axis="${leg_rail_axis_R}" p_low="-0.111" p_up="0.0"
+             thigh_xyz="${leg3_thigh_xyz}" shin_xyz="${leg3_shin_xyz}" slider_inertia_xyz="${l3_inertia_xyz}"
+             knee_xyz="${leg_knee_xyz_R}"
+             foot_tip_xyz="${leg3_foot_tip_xyz}"/>
+
+  <!-- Front-right: symmetric hip offset (mirrors lh), symmetric knee Z, symmetric shin/foot -->
+  <xacro:leg prefix="rf" side="right" leg_num="4" parent_link="rf_leg_mount" rail_axis="${leg_rail_axis_R}" p_low="0.0" p_up="0.111"
+             thigh_xyz="${leg4_thigh_xyz}" shin_xyz="${leg4_shin_xyz}" slider_inertia_xyz="${l4_inertia_xyz}"
+             hip_xyz="0.016 0.0199 0.055" knee_xyz="${leg_knee_xyz_R}"
+             foot_tip_xyz="${leg4_foot_tip_xyz}"/>
+
+  <xacro:include filename="$(find dog2_description)/urdf/dog2_ros2_control.xacro"/>
+  <xacro:dog2_ros2_control controllers_yaml="${controllers_yaml}"/>
+
+</robot>
