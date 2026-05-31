@@ -9,14 +9,23 @@ controller:
   # but this custom URDF needs a stable contact/kinematics baseline before
   # force-only gain tuning.
   actuator_mode: "pybullet_position"
-  pybullet_position_gain: 0.35
-  pybullet_velocity_gain: 0.08
+  pybullet_position_gain: 0.55
+  pybullet_velocity_gain: 0.12
   debug_base_attitude_assist: true
-  debug_base_attitude_kp: 4.0
-  debug_base_attitude_kd: 0.35
-  debug_base_velocity_assist: true
-  debug_base_velocity_kp: 20.0
-  debug_base_velocity_max_force: 3.0
+  # Bring-up attitude damping only resists roll/pitch drift.  It must not be
+  # used as the source of forward motion; walking drive comes from stance feet.
+  debug_base_attitude_kp: 40.0
+  debug_base_attitude_kd: 4.0
+  # Yaw damping keeps contact asymmetry from spinning the body into leg joint
+  # limits.  It does not apply translational force to move the base forward.
+  debug_base_yaw_kp: 4.0
+  debug_base_yaw_kd: 1.2
+  debug_base_velocity_assist: false
+  # Keep this assist small.  It is only for bring-up damping/trim; measurable
+  # forward motion should still come from stance foot targets pushing through
+  # contact, not from directly dragging the base.
+  debug_base_velocity_kp: 35.0
+  debug_base_velocity_max_force: 5.0
 
 joint_pd:
   default_kp: 80.0
@@ -25,8 +34,8 @@ joint_pd:
   torque_limit_default: 80.0
 
 safety:
-  max_roll_deg: 20.0
-  max_pitch_deg: 20.0
+  max_roll_deg: 22.0
+  max_pitch_deg: 22.0
   stand_accept_roll_deg: 10.0
   stand_accept_pitch_deg: 10.0
   min_base_height: 0.12
@@ -37,3 +46,16 @@ safety:
   min_stance_legs: 2
   max_ik_failures: 5
   max_foot_target_jump_m: 0.05
+
+contact:
+  # PyBullet defaults are too implicit for stance-foot walking bring-up.  These
+  # values make the foot/ground contact repeatable so small leg-side stance
+  # targets can create measured ground reaction without dragging the base.
+  plane_lateral_friction: 0.6
+  foot_lateral_friction: 0.6
+  foot_spinning_friction: 0.03
+  foot_rolling_friction: 0.001
+  base_linear_damping: 0.6
+  base_angular_damping: 0.4
+  soft_cap_brake_kp: 220.0
+  soft_cap_brake_max_force: 40.0

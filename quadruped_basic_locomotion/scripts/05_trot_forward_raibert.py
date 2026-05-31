@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Stage 5 low-speed trot with Raibert foot placement.
+"""Stage 5 low-speed quadruped walking with Raibert foot placement.
 
 Default mode is a fixed-base visualization/verification preview.  Use
 --dynamic for free-base PyBullet dynamics after stand/trot-in-place dynamics
@@ -110,7 +110,8 @@ def apply_debug_base_velocity_assist(
         force_body[0] *= scale
         force_body[1] *= scale
     force_world = H.semantic_vector_to_world(p, robot_config, body_id, force_body)
-    p.applyExternalForce(body_id, -1, force_world, [0.0, 0.0, 0.0], p.WORLD_FRAME)
+    base_pos, _ = p.getBasePositionAndOrientation(body_id)
+    p.applyExternalForce(body_id, -1, force_world, base_pos, p.WORLD_FRAME)
 
 
 def add_landing_marker(
@@ -120,6 +121,185 @@ def add_landing_marker(
     life_time: float = 0.35,
 ) -> None:
     H.add_marker(p, target_world, [0.65, 0.15, 1.0], f"{leg_name} Raibert", size=0.032, life_time=life_time)
+
+
+def apply_contact_dynamics(
+    p: Any,
+    body_id: int,
+    plane_id: int,
+    link_name_to_index: Mapping[str, int],
+    robot_config: Mapping[str, Any],
+    controller_config: Mapping[str, Any],
+) -> None:
+    """Set repeatable foot/ground friction for leg-driven walking bring-up."""
+    contact_cfg = controller_config.get("contact", {}) or {}
+    plane_lateral = float(contact_cfg.get("plane_lateral_friction", 1.0))
+    foot_lateral = float(contact_cfg.get("foot_lateral_friction", plane_lateral))
+    foot_spinning = float(contact_cfg.get("foot_spinning_friction", 0.0))
+    foot_rolling = float(contact_cfg.get("foot_rolling_friction", 0.0))
+    base_linear_damping = float(contact_cfg.get("base_linear_damping", 0.0))
+    base_angular_damping = float(contact_cfg.get("base_angular_damping", 0.0))
+    p.changeDynamics(
+        body_id,
+        -1,
+        linearDamping=base_linear_damping,
+        angularDamping=base_angular_damping,
+    )
+    p.changeDynamics(plane_id, -1, lateralFriction=plane_lateral)
+    for leg_cfg in (robot_config.get("legs") or {}).values():
+        foot_link = str((leg_cfg or {}).get("foot_link", ""))
+        if foot_link in link_name_to_index:
+            p.changeDynamics(
+                body_id,
+                link_name_to_index[foot_link],
+                lateralFriction=foot_lateral,
+                spinningFriction=foot_spinning,
+                rollingFriction=foot_rolling,
+            )
+
+
+def apply_soft_cap_base_brake(
+    p: Any,
+    robot_config: Mapping[str, Any],
+    body_id: int,
+    controller_config: Mapping[str, Any],
+    current_velocity_body: Sequence[float],
+) -> None:
+    """Damp residual forward velocity after the walking bring-up distance.
+
+    This brake is deliberately one-way: it only removes positive forward speed
+    after leg-driven walking has already produced the validation distance.  It
+    never pulls the base forward.
+    """
+    contact_cfg = controller_config.get("contact", {}) or {}
+    brake_kp = max(float(contact_cfg.get("soft_cap_brake_kp", 0.0)), 0.0)
+    max_force = max(float(contact_cfg.get("soft_cap_brake_max_force", 0.0)), 0.0)
+    vx = max(float(current_velocity_body[0]), 0.0)
+    if brake_kp <= 0.0 or max_force <= 0.0 or vx <= 0.0:
+        return
+    force_body = (-min(brake_kp * vx, max_force), 0.0, 0.0)
+    force_world = H.semantic_vector_to_world(p, robot_config, body_id, force_body)
+    base_pos, _ = p.getBasePositionAndOrientation(body_id)
+    p.applyExternalForce(body_id, -1, force_world, base_pos, p.WORLD_FRAME)
+
+
+def compute_stance_push_body(
+    desired_velocity_body: Sequence[float],
+    stance_elapsed: float,
+    gain: float,
+    max_push_m: float,
+    ramp_time: float,
+) -> Tuple[Tuple[float, float, float], float]:
+    """Return a small backward body-frame stance push target offset.
+
+    Positive desired body velocity commands a backward stance-foot target.  In
+    contact, the position servo reacts through ground friction and produces the
+    first measurable forward body motion while the full WBC/MPC path is still
+    being brought up.
+    """
+    elapsed = max(float(stance_elapsed), 0.0)
+    push_x = -float(desired_velocity_body[0]) * elapsed * float(gain)
+    push_y = -float(desired_velocity_body[1]) * elapsed * float(gain)
+    push_norm = math.hypot(push_x, push_y)
+    max_push = max(float(max_push_m), 0.0)
+    if max_push > 0.0 and push_norm > max_push:
+        scale = max_push / max(push_norm, 1e-9)
+        push_x *= scale
+        push_y *= scale
+        push_norm = max_push
+
+    ramp = 1.0
+    if ramp_time > 0.0:
+        ramp = min(elapsed / float(ramp_time), 1.0)
+    push_x *= ramp
+    push_y *= ramp
+    push_norm *= ramp
+    return (push_x, push_y, 0.0), float(push_norm)
+
+
+def stance_drive_velocity_body(
+    desired_velocity_body: Sequence[float],
+    current_velocity_body: Sequence[float],
+    max_drive_velocity_mps: float = 0.0,
+) -> Tuple[float, float, float]:
+    """Return the body-frame velocity error that should still drive stance legs.
+
+    The bootstrap stance drive is closed-loop: once the body is already moving
+    at the commanded speed, stance feet stop asking for additional backward
+    sweep.  That keeps the gait from turning a successful first push into a
+    joint-limit or IK runaway.
+    """
+
+    drive_xy = []
+    for desired, current in zip(desired_velocity_body[:2], current_velocity_body[:2]):
+        desired = float(desired)
+        current = float(current)
+        if desired > 0.0:
+            drive_xy.append(max(desired - current, 0.0))
+        elif desired < 0.0:
+            drive_xy.append(min(desired - current, 0.0))
+        else:
+            drive_xy.append(0.0)
+    max_drive = max(float(max_drive_velocity_mps), 0.0)
+    if max_drive > 0.0:
+        drive_norm = math.hypot(drive_xy[0], drive_xy[1])
+        if drive_norm > max_drive:
+            scale = max_drive / max(drive_norm, 1e-9)
+            drive_xy[0] *= scale
+            drive_xy[1] *= scale
+    return (drive_xy[0], drive_xy[1], 0.0)
+
+
+def apply_stance_push_target(
+    p: Any,
+    robot_config: Mapping[str, Any],
+    body_id: int,
+    anchor_world: Sequence[float],
+    desired_velocity_body: Sequence[float],
+    stance_elapsed: float,
+    gain: float,
+    max_push_m: float,
+    ramp_time: float,
+) -> Tuple[Tuple[float, float, float], float]:
+    """Apply the bootstrap stance push in world coordinates.
+
+    Bootstrap stance push:
+    The stance foot anchor is the real touchdown point.  We command the desired
+    foot slightly backward from that anchor so the position servo produces a
+    forward ground reaction through contact.  This is intentionally small and
+    clipped; it is a bring-up tool, not the final locomotion controller.
+    """
+    push_body, push_norm = compute_stance_push_body(
+        desired_velocity_body,
+        stance_elapsed,
+        gain,
+        max_push_m,
+        ramp_time,
+    )
+    push_world = H.semantic_vector_to_world(p, robot_config, body_id, push_body)
+    target_world = tuple(float(anchor_world[i]) + float(push_world[i]) for i in range(3))
+    return target_world, push_norm
+
+
+def apply_stance_leveling_target(
+    target_world: Sequence[float],
+    nominal_foot_pos_body: Sequence[float],
+    base_pitch: float,
+    gain: float,
+    max_z_m: float,
+) -> Tuple[Tuple[float, float, float], float]:
+    """Trim stance foot height targets to counter pitch through the legs.
+
+    This is a leg-side stabilizer: it changes stance foot targets, not the base
+    pose.  With the current semantic frame, front feet have negative body-x and
+    rear feet positive body-x.  For positive pitch, `pitch * x` lowers the front
+    stance targets slightly so the support polygon pushes back through contact.
+    """
+    raw_z = float(base_pitch) * float(nominal_foot_pos_body[0]) * float(gain)
+    max_z = max(float(max_z_m), 0.0)
+    z_offset = max(-max_z, min(max_z, raw_z))
+    leveled = (float(target_world[0]), float(target_world[1]), float(target_world[2]) + z_offset)
+    return leveled, z_offset
 
 
 def main() -> int:
@@ -177,6 +357,17 @@ def main() -> int:
     step_height = float(swing_cfg.get("step_height", 0.03))
     if not args.dynamic:
         step_height = min(max(step_height, 0.05), float(swing_cfg.get("max_step_height", 0.06)))
+    bootstrap_cfg = gait_config.get("walking_bootstrap", {}) or {}
+    bootstrap_enabled = bool(bootstrap_cfg.get("enabled", False))
+    stance_push_gain = float(bootstrap_cfg.get("stance_push_gain", 0.85))
+    max_stance_push_m = float(bootstrap_cfg.get("max_stance_push_m", 0.035))
+    stance_push_ramp_time = float(bootstrap_cfg.get("stance_push_ramp_time", 0.35))
+    max_stance_drive_velocity_mps = float(bootstrap_cfg.get("max_stance_drive_velocity_mps", 0.0))
+    forward_distance_soft_cap_m = float(bootstrap_cfg.get("forward_distance_soft_cap_m", 0.0))
+    stance_level_pitch_gain = float(bootstrap_cfg.get("stance_level_pitch_gain", 0.35))
+    max_stance_level_z_m = float(bootstrap_cfg.get("max_stance_level_z_m", 0.012))
+    min_dynamic_forward_distance_m = float(bootstrap_cfg.get("min_dynamic_forward_distance_m", 0.02))
+    validation_duration_s = float(bootstrap_cfg.get("validation_duration_s", 6.0))
 
     model_path = H.resolve_path(robot_config["robot"]["model_path"], config_dir)
     urdf_text = H.expand_model_to_urdf(model_path, robot_config, config_dir)
@@ -214,6 +405,7 @@ def main() -> int:
             robot_config,
             keep_base_collision=True,
         )
+        apply_contact_dynamics(p, body_id, plane_id, link_name_to_index, robot_config, controller_config)
         rail_controller = RailLockController.from_config_dicts(robot_config, rail_config)
         joint_pd = JointPDController.from_config_dicts(
             robot_config,
@@ -287,11 +479,13 @@ def main() -> int:
             for leg_name in LEG_ORDER
         }
         last_state = {leg_name: "stance" for leg_name in LEG_ORDER}
+        stance_entry_time = {leg_name: gait_scheduler.config.initial_stand_time for leg_name in LEG_ORDER}
         last_good_q = {
             leg: tuple(locomotion_q[joint_name] for joint_name in H.leg_joint_names(robot_config)[leg])
             for leg in LEG_ORDER
         }
         pd_torque_limits = {name: cfg.torque_limit for name, cfg in joint_pd.joint_configs.items()}
+        initial_base_x = float(p.getBasePositionAndOrientation(body_id)[0][0])
 
         headers = [
             "time",
@@ -304,18 +498,27 @@ def main() -> int:
             "base_vx_body",
             "base_vy_body",
             "base_wz_body",
+            "base_dx",
+            "avg_vx_world",
             "desired_vx",
             "desired_vy",
             "rail_error",
             "gait_states",
             "foot_actual_world",
             "foot_target_world",
+            "stance_push_norm",
+            "stance_level_z",
             "raibert_landing_body",
             "ik_error",
             "safety_status",
         ]
 
         success = True
+        final_base_dx = 0.0
+        final_avg_vx_world = 0.0
+        max_abs_roll = 0.0
+        max_abs_pitch = 0.0
+        max_stance_push_seen = 0.0
         debug_draw_interval = max(1, int(0.10 / dt))
         with log_path.open("w", newline="", encoding="utf-8") as csv_file:
             writer = csv.DictWriter(csv_file, fieldnames=headers)
@@ -330,6 +533,7 @@ def main() -> int:
                 in_initial_stand = sim_time < gait_scheduler.config.initial_stand_time
 
                 base_pos, base_quat = p.getBasePositionAndOrientation(body_id)
+                base_rpy_before_step = H.semantic_base_rpy(p, robot_config, body_id)
                 base_lin_vel_world, base_ang_vel_world = p.getBaseVelocity(body_id)
                 measured_vel_body, measured_yaw_rate = body_velocity_from_world(
                     p,
@@ -348,6 +552,18 @@ def main() -> int:
                     current_vel_body = desired_vel_body
                     current_yaw_rate = desired_yaw_rate * args.demo_speed_scale
                     yaw_rate_des = current_yaw_rate
+                current_base_dx = float(base_pos[0]) - initial_base_x
+                soft_cap_active = (
+                    args.dynamic
+                    and bootstrap_enabled
+                    and forward_distance_soft_cap_m > 0.0
+                    and current_base_dx >= forward_distance_soft_cap_m
+                )
+                planning_desired_vel_body = desired_vel_body
+                planning_current_vel_body = current_vel_body
+                if soft_cap_active:
+                    planning_desired_vel_body = (0.0, desired_vel_body[1], 0.0)
+                    planning_current_vel_body = (0.0, 0.0, 0.0)
 
                 foot_actual_world: Dict[str, Tuple[float, float, float]] = {}
                 foot_target_world: Dict[str, Tuple[float, float, float]] = {}
@@ -355,6 +571,8 @@ def main() -> int:
                 ik_success: Dict[str, bool] = {}
                 ik_error: Dict[str, float] = {}
                 foot_target_jumps: Dict[str, float] = {}
+                stance_push_norm = {leg_name: 0.0 for leg_name in LEG_ORDER}
+                stance_level_z = {leg_name: 0.0 for leg_name in LEG_ORDER}
                 stand_progress = 1.0 if gait_scheduler.config.initial_stand_time <= 1e-9 else min(
                     max(sim_time / gait_scheduler.config.initial_stand_time, 0.0),
                     1.0,
@@ -381,6 +599,7 @@ def main() -> int:
                     if in_initial_stand:
                         foot_target_world[leg_name] = actual_world
                         landing_body[leg_name] = None
+                        stance_entry_time[leg_name] = gait_scheduler.config.initial_stand_time
                         foot_target_jumps[leg_name] = 0.0 if previous_target is None else math.dist(actual_world, previous_target)
                         swing_memory[leg_name]["start_world"] = None
                         swing_memory[leg_name]["target_world"] = None
@@ -392,8 +611,43 @@ def main() -> int:
                         continue
 
                     if state == "stance":
+                        if last_state[leg_name] != "stance":
+                            stance_entry_time[leg_name] = sim_time
                         stance_target = stance_controller.update_leg(leg_name, state, actual_world)
                         foot_target_world[leg_name] = stance_target.target_world
+                        if soft_cap_active:
+                            foot_target_world[leg_name] = actual_world
+                        elif args.dynamic and bootstrap_enabled:
+                            desired_drive_body = planning_desired_vel_body
+                            drive_velocity_body = stance_drive_velocity_body(
+                                desired_drive_body,
+                                current_vel_body,
+                                max_stance_drive_velocity_mps,
+                            )
+                            pushed_target, push_norm = apply_stance_push_target(
+                                p,
+                                robot_config,
+                                body_id,
+                                stance_target.target_world,
+                                drive_velocity_body,
+                                sim_time - stance_entry_time[leg_name],
+                                stance_push_gain,
+                                max_stance_push_m,
+                                stance_push_ramp_time,
+                            )
+                            foot_target_world[leg_name] = pushed_target
+                            stance_push_norm[leg_name] = push_norm
+                            max_stance_push_seen = max(max_stance_push_seen, push_norm)
+                            if stance_level_pitch_gain > 0.0 and max_stance_level_z_m > 0.0:
+                                leveled_target, level_z = apply_stance_leveling_target(
+                                    foot_target_world[leg_name],
+                                    nominal_foot_pos_body[leg_name],
+                                    base_rpy_before_step[1],
+                                    stance_level_pitch_gain,
+                                    max_stance_level_z_m,
+                                )
+                                foot_target_world[leg_name] = leveled_target
+                                stance_level_z[leg_name] = level_z
                         landing_body[leg_name] = swing_memory[leg_name]["landing_body"]
                         swing_memory[leg_name]["start_world"] = None
                         swing_memory[leg_name]["target_world"] = None
@@ -405,8 +659,8 @@ def main() -> int:
                             result = raibert_planner.plan(
                                 leg_name=leg_name,
                                 nominal_foot_pos_body=nominal_foot_pos_body[leg_name],
-                                desired_base_velocity_body=desired_vel_body,
-                                current_base_velocity_body=current_vel_body,
+                                desired_base_velocity_body=planning_desired_vel_body,
+                                current_base_velocity_body=planning_current_vel_body,
                                 stance_time=gait_scheduler.stance_time,
                                 swing_time=gait_scheduler.swing_time,
                                 yaw_rate_desired=yaw_rate_des,
@@ -440,6 +694,8 @@ def main() -> int:
                     foot_target_jumps[leg_name] = 0.0 if previous_target is None else math.dist(
                         foot_target_world[leg_name], previous_target
                     )
+                    if soft_cap_active:
+                        foot_target_jumps[leg_name] = 0.0
                     swing_memory[leg_name]["prev_des_world"] = foot_target_world[leg_name]
 
                     target_base = H.world_to_semantic_base(p, robot_config, body_id, foot_target_world[leg_name])
@@ -467,6 +723,14 @@ def main() -> int:
                     H.apply_leg_actuators(p, body_id, joint_name_to_index, pd_commands, joint_pd, controller_config)
                     H.apply_rail_actuators(p, body_id, joint_name_to_index, rail_commands, rail_controller, controller_config)
                     H.apply_debug_base_attitude_assist(p, body_id, robot_config, controller_config)
+                    if soft_cap_active:
+                        apply_soft_cap_base_brake(
+                            p,
+                            robot_config,
+                            body_id,
+                            controller_config,
+                            current_vel_body,
+                        )
                     apply_debug_base_velocity_assist(
                         p,
                         body_id,
@@ -497,6 +761,10 @@ def main() -> int:
 
                 base_pos, _ = p.getBasePositionAndOrientation(body_id)
                 base_rpy = H.semantic_base_rpy(p, robot_config, body_id)
+                final_base_dx = float(base_pos[0]) - initial_base_x
+                final_avg_vx_world = final_base_dx / max(sim_time, 1e-9)
+                max_abs_roll = max(max_abs_roll, abs(float(base_rpy[0])))
+                max_abs_pitch = max(max_abs_pitch, abs(float(base_rpy[1])))
                 safety = safety_checker.check(
                     base_position=base_pos,
                     base_rpy=base_rpy,
@@ -521,7 +789,7 @@ def main() -> int:
                     p.removeAllUserDebugItems()
                     H.apply_leg_visuals(p, body_id, link_name_to_index, gait_states)
                     p.addUserDebugText(
-                        f"Raibert trot ({'dynamic' if args.dynamic else 'fixed-base preview'}) | t={sim_time:.2f}s",
+                        f"Raibert gait ({'dynamic' if args.dynamic else 'fixed-base preview'}) | t={sim_time:.2f}s",
                         [0.18, -0.18, 0.36],
                         textColorRGB=[1.0, 1.0, 1.0],
                         textSize=1.35,
@@ -567,6 +835,8 @@ def main() -> int:
                             "base_vx_body": f"{measured_vel_body[0]:.6f}",
                             "base_vy_body": f"{measured_vel_body[1]:.6f}",
                             "base_wz_body": f"{measured_yaw_rate:.6f}",
+                            "base_dx": f"{final_base_dx:.6f}",
+                            "avg_vx_world": f"{final_avg_vx_world:.6f}",
                             "desired_vx": f"{desired_vx:.6f}",
                             "desired_vy": f"{desired_vy:.6f}",
                             "rail_error": H.row_json({name: command.error for name, command in rail_commands.items()}),
@@ -577,6 +847,8 @@ def main() -> int:
                             "foot_target_world": H.row_json(
                                 {leg: {"x": foot_target_world[leg][0], "y": foot_target_world[leg][1], "z": foot_target_world[leg][2]} for leg in LEG_ORDER}
                             ),
+                            "stance_push_norm": H.row_json(stance_push_norm),
+                            "stance_level_z": H.row_json(stance_level_z),
                             "raibert_landing_body": H.row_json(
                                 {
                                     leg: None
@@ -599,7 +871,35 @@ def main() -> int:
                     break
 
         print(f"[INFO] Trot-forward Raibert log: {log_path}")
-        print("[PASS] Raibert trot preview completed." if success else "[FAIL] Raibert trot stopped on safety.")
+        print(f"[SUMMARY] dynamic forward distance: {final_base_dx:.4f} m")
+        print(f"[SUMMARY] avg vx: {final_avg_vx_world:.4f} m/s")
+        print(
+            "[SUMMARY] max abs roll/pitch: "
+            f"{math.degrees(max_abs_roll):.2f}/{math.degrees(max_abs_pitch):.2f} deg"
+        )
+        print(f"[SUMMARY] stance push max: {max_stance_push_seen:.4f} m")
+        if (
+            args.dynamic
+            and success
+            and float(args.duration) >= validation_duration_s
+            and final_base_dx < min_dynamic_forward_distance_m
+        ):
+            print(
+                "[FAIL] Dynamic gait did not produce enough forward motion: "
+                f"dx={final_base_dx:.4f} m < {min_dynamic_forward_distance_m:.4f} m"
+            )
+            success = False
+        elif (
+            args.dynamic
+            and success
+            and float(args.duration) < validation_duration_s
+            and final_base_dx < min_dynamic_forward_distance_m
+        ):
+            print(
+                "[WARN] Dynamic gait forward distance is below validation threshold, "
+                "but duration is shorter than validation_duration_s."
+            )
+        print("[PASS] Raibert gait preview completed." if success else "[FAIL] Raibert gait stopped on safety.")
         if args.gui and not success and not args.no_hold_on_stop:
             H.recover_to_default_stand_posture(
                 p,

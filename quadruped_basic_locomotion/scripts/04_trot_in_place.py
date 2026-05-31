@@ -163,6 +163,8 @@ def apply_debug_base_attitude_assist(
         return
     kp = float(controller.get("debug_base_attitude_kp", 4.0))
     kd = float(controller.get("debug_base_attitude_kd", 0.35))
+    yaw_kp = float(controller.get("debug_base_yaw_kp", 0.0))
+    yaw_kd = float(controller.get("debug_base_yaw_kd", 0.0))
     base_rpy = semantic_base_rpy(p, robot_config, body_id)
     _, base_ang_vel_world = p.getBaseVelocity(body_id)
     _, inv_sem_quat = p.invertTransform([0.0, 0.0, 0.0], semantic_base_pose(p, robot_config, body_id)[1])
@@ -175,7 +177,7 @@ def apply_debug_base_attitude_assist(
     torque_sem = (
         -kp * float(base_rpy[0]) - kd * float(base_ang_vel_sem[0]),
         -kp * float(base_rpy[1]) - kd * float(base_ang_vel_sem[1]),
-        0.0,
+        -yaw_kp * float(base_rpy[2]) - yaw_kd * float(base_ang_vel_sem[2]),
     )
     torque_world = semantic_vector_to_world(p, robot_config, body_id, torque_sem)
     p.applyExternalTorque(body_id, -1, torque_world, p.WORLD_FRAME)

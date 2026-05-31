@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Phase-based trot gait scheduler.
+"""Phase-based quadruped gait scheduler.
 
 This module only decides stance/swing timing.  It does not compute footholds,
 IK, or torque commands, and it never includes rail joints in any state.
@@ -52,7 +52,7 @@ class LegPhaseState:
 
 
 class GaitScheduler:
-    """Simple trot scheduler with an initial all-stance stabilization period."""
+    """Simple phase scheduler with an initial all-stance stabilization period."""
 
     def __init__(self, config: GaitSchedulerConfig):
         self.config = config
@@ -79,20 +79,42 @@ class GaitScheduler:
         )
 
     def _validate_config(self) -> None:
-        if self.config.gait_type.lower() != "trot":
-            raise ValueError(f"Only trot is supported in this staged scheduler, got {self.config.gait_type!r}.")
-        if self.config.duty_factor <= 0.5:
-            raise ValueError("Duty factor must stay above 0.5 so at least two legs remain in stance.")
+        gait_type = self.config.gait_type.lower()
+        if gait_type not in {"trot", "crawl", "walk"}:
+            raise ValueError(
+                f"Supported staged gaits are 'trot', 'crawl', and 'walk', got {self.config.gait_type!r}."
+            )
         missing = [leg for leg in LEG_ORDER if leg not in self._phase_offset]
         if missing:
             raise ValueError(f"Missing phase_offset entries for legs: {missing}")
-        if abs((self._phase_offset["FL"] - self._phase_offset["RR"]) % 1.0) > 1e-9:
-            raise ValueError("FL and RR must stay in phase for trot.")
-        if abs((self._phase_offset["FR"] - self._phase_offset["RL"]) % 1.0) > 1e-9:
-            raise ValueError("FR and RL must stay in phase for trot.")
-        diff = (self._phase_offset["FR"] - self._phase_offset["FL"]) % 1.0
-        if abs(diff - 0.5) > 1e-9:
-            raise ValueError("Diagonal groups must differ by 0.5 phase for trot.")
+        if gait_type == "trot":
+            if self.config.duty_factor <= 0.5:
+                raise ValueError("Trot duty_factor must stay above 0.5 so at least two legs remain in stance.")
+            if abs((self._phase_offset["FL"] - self._phase_offset["RR"]) % 1.0) > 1e-9:
+                raise ValueError("FL and RR must stay in phase for trot.")
+            if abs((self._phase_offset["FR"] - self._phase_offset["RL"]) % 1.0) > 1e-9:
+                raise ValueError("FR and RL must stay in phase for trot.")
+            diff = (self._phase_offset["FR"] - self._phase_offset["FL"]) % 1.0
+            if abs(diff - 0.5) > 1e-9:
+                raise ValueError("Diagonal groups must differ by 0.5 phase for trot.")
+        else:
+            if self.config.min_stance_legs < 3:
+                raise ValueError("Crawl/walk bring-up must require at least three stance legs.")
+            if self.config.duty_factor <= 0.75:
+                raise ValueError("Crawl/walk duty_factor must stay above 0.75 to avoid two-leg support gaps.")
+
+        # Validate the configured phase offsets over one cycle.  This keeps the
+        # scheduler generic while still refusing phase tables that briefly drop
+        # below the requested support polygon size.
+        for i in range(400):
+            phase_time = (i / 400.0) * self.config.period
+            states = [self.leg_state(leg_name, self.config.initial_stand_time + phase_time) for leg_name in LEG_ORDER]
+            stance_count = sum(1 for state in states if state.state == "stance")
+            if stance_count < self.config.min_stance_legs:
+                raise ValueError(
+                    "Configured gait drops below "
+                    f"{self.config.min_stance_legs} stance legs near phase {i / 400.0:.3f}."
+                )
 
     @property
     def swing_time(self) -> float:
