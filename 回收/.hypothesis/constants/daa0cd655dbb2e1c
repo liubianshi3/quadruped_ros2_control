@@ -1,4 +1,0 @@
-# file: /usr/lib/python3/dist-packages/coverage/debug.py
-# hypothesis_version: 6.150.2
-
-[65535, ' %s', ' @ ', '$coverage.object_id', '%*s %s', '%*s:', '%*s: %s', '%30s : %s:%d', '(', ')', ', ', '--{:-<60s}', '-none-', '.', '/', '; ', 'COVERAGE_DEBUG_FILE', '_', '__dict__', '__init__', 'a', 'argv', 'callers', 'getppid', 'pid', 'process', 'self', 'show_repr_attr', 'simple_repr_ignore', 'stderr', 'stdout', '{}={!r}']

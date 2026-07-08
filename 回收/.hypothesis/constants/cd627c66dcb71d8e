@@ -1,4 +1,0 @@
-# file: /usr/lib/python3/dist-packages/numpy/core/_dtype.py
-# hypothesis_version: 6.150.2
-
-['%d', "'%s%c%d'", "'%s%d'", "'%sM8%s'", "'%sU%d'", "'%sU'", "'%sm8%s'", "'?'", "'O'", "'S%d'", "'S'", "'V%d'", "'V'", "'bool'", '(', '({!r}, {!r}), ', '({}, {})', ')', ',', ', ', ", 'aligned':True}", ', align=True', '=', 'M', 'O', 'S', 'U', 'V', '[', '[{}]', '[{}{}]', ']', "], 'formats':[", "], 'itemsize':%d", "], 'offsets':[", "], 'titles':[", 'b', 'bool', 'bytes', 'c', 'complex', 'datetime', 'dtype({})', 'f', 'float', 'generic', 'i', 'int', 'm', 'object', 'str', 'timedelta', 'u', 'uint', 'void', '{!r}, ', "{'names':[", '{}', '{}, {}', '|', '}']

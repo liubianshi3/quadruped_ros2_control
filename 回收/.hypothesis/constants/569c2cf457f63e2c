@@ -1,4 +1,0 @@
-# file: /usr/lib/python3/dist-packages/coverage/collector.py
-# hypothesis_version: 6.150.2
-
-[1048575, ', ', 'COVERAGE_TEST_TRACER', '__self__', 'c', 'check_include', 'concur_id_func', 'disable_plugin', 'eventlet', 'file_tracers', 'gevent', 'greenlet', 'module', 'self._collectors:', 'should_start_context', 'thread', 'threading', 'traces', '|']

@@ -1,4 +1,0 @@
-# file: /usr/lib/python3/dist-packages/toml/decoder.py
-# hypothesis_version: 6.150.2
-
-['\x00', '\x08', ' already exists?', '"', '#', "'", "' Something ", "'. Try quoting it.", '([0-9])(_([0-9]))*', '+', ',', '-', '-0123456789', '.', '._', '0', '01234567', '0123456789', '0123456789abcdef', '=', 'Duplicate keys!', 'E', "Invalid group name '", 'U', 'Unbalanced quotes', 'What? ', 'Z', '[', '\\', '\\U', '\\u', ']', ']]', '^[A-Za-z0-9_-]+$', '_', '_.', '__', 'array', 'b', 'bool', 'd', 'date', 'e', 'f', 'false', 'float', 'inf', 'inline_object', 'int', 'n', 'nan', 'o', 'r', 'str', 't', 'time', 'true', 'u', 'utf-8', 'utf8', 'went wrong.', 'x', '{', '}']

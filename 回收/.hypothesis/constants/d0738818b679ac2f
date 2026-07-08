@@ -1,4 +1,0 @@
-# file: /home/dell/aperfect/carbot_ws/presentation_viz/__init__.py
-# hypothesis_version: 6.150.2
-
-['0.1.0', 'ConfigManager', 'Dog2 Robotics Team', 'Joint', 'Link', 'TimeSeriesData', 'URDFModel', 'WorkspaceData', 'setup_logger']

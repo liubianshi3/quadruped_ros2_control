@@ -1,4 +1,0 @@
-# file: /usr/lib/python3/dist-packages/lark/parsers/lalr_parser.py
-# hypothesis_version: 6.150.2
-
-['$END', '%d)', '----------------', 'STATE STACK DUMP', 'callbacks', 'end_state', 'lexer', 'parse_conf', 'parse_table', 'start', 'start_state', 'state_stack', 'states', 'value_stack']

@@ -1,4 +1,0 @@
-# file: /usr/lib/python3/dist-packages/lark/visitors.py
-# hypothesis_version: 6.150.2
-
-['_', '_Leaf_T', '_Leaf_U', '_R', '_Return_T', '_Return_V', '__', 'transform', 'visit_wrapper']

@@ -1,4 +1,0 @@
-# file: /usr/lib/python3/dist-packages/_pytest/runner.py
-# hypothesis_version: 6.150.2
-
-[0.005, '\x00', ' (fixtures used: {})', '(null)', ', ', '--durations', '--durations-min', '=', 'CallInfo[None]', 'CallInfo[TResult]', 'CallInfo[object]', 'E', 'ERROR', 'N', 'Optional[TResult]', 'PYTEST_CURRENT_TEST', 'SKIPPED', 'Session', 'TResult', 'TerminalReporter', '_prepare_exc', '_request', 'call', 'collect', 'duration', 'error', 'failed', 'fixturenames', 'general', 'line', 'passed', 'reporting', 's', 'setup', 'setuponly', 'setupshow', 'skipped', 'slowest %s durations', 'slowest durations', 'store', 'teardown', 'terminal reporting', 'toterminal', 'unittest', 'usepdb', 'verbose', 'wasxfail']

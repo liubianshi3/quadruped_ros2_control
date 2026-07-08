@@ -1,4 +1,0 @@
-# file: /usr/lib/python3/dist-packages/numpy/core/records.py
-# hypothesis_version: 6.150.2
-
-['%% %ds: %%s', ',', ', ', '1.13', '<', '=', '>', 'B', 'C', 'I', 'L', 'N', 'S', 'Unknown input type', '[], shape=%s', '__array_interface__', 'aligned', 'array', 'array(', 'b', 'byteorder', 'dtype', 'f%d', 'f1', 'format_parser', 'formats', 'fromarrays', 'fromfile', 'fromrecords', 'fromstring', 'f{}', 'getfield', 'i', 'l', 'legacy', 'n', 'names', 'numpy', 'offsets', 'rb', 'readinto', 'rec.array(', 'recarray', 'record', 's', 'setfield', 'titles', '|']

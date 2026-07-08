@@ -1,4 +1,0 @@
-# file: /usr/lib/python3/dist-packages/_pytest/python_api.py
-# hypothesis_version: 6.150.2
-
-[1e-12, 1e-06, 100, ' ∠ ±180°', ', ', '1e-12', '1e-6', '???', 'ApproxScalar', 'RaisesContext[_E]', '_E', '__array__', '__array_interface__', 'approx({!r})', 'match', 'ndarray', 'numpy', 'obj']

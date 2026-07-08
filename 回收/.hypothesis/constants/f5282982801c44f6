@@ -1,4 +1,0 @@
-# file: /usr/lib/python3/dist-packages/pluggy/manager.py
-# hypothesis_version: 6.150.2
-
-['%s%s', '-->', '_', '__name__', '_dist', '_impl', '_spec', 'finish', 'firstresult', 'hook', 'name', 'pluginmanage', 'project_name', 'signature']

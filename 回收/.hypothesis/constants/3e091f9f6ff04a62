@@ -1,4 +1,0 @@
-# file: /usr/lib/python3/dist-packages/lark/common.py
-# hypothesis_version: 6.150.2
-
-['Optional[PostLex]', 'g_regex_flags', 'ignore', 'lexer_type', 'parser_type', 'rules', 'start', 'terminals', 'use_bytes']

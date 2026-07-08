@@ -1,4 +1,0 @@
-# file: /opt/ros/humble/local/lib/python3.10/dist-packages/builtin_interfaces/msg/_duration.py
-# hypothesis_version: 6.150.2
-
-[-2147483648, 2147483648, 4294967296, '%s(%s)', ')', ', ', '.', '=', '[]', '_', '_nanosec', '_sec', 'array(', "array('X', ", 'builtin_interfaces', 'double', 'float', 'int16', 'int32', 'int64', 'int8', 'nanosec', 'sec', 'uint16', 'uint32', 'uint64', 'uint8']

@@ -1,4 +1,0 @@
-# file: /usr/lib/python3/dist-packages/coverage/files.py
-# hypothesis_version: 6.150.2
-
-[100, '*', '.', '?', 'UTF-8', '[\\\\/]', '[\\\\\\\\/]', '\\/', '\\1', '\\\\?/', '\\\\Z(\\(\\?|$)', '_', '__init__.py', 'sha3_256', 'unicode', 'unknown']

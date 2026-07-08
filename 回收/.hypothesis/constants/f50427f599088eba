@@ -1,4 +1,0 @@
-# file: /opt/ros/humble/local/lib/python3.10/dist-packages/rcl_interfaces/msg/_parameter_event.py
-# hypothesis_version: 6.150.2
-
-['%s(%s)', ')', ', ', '.', '=', 'Parameter', 'Time', '[]', '_', '_changed_parameters', '_deleted_parameters', '_new_parameters', '_node', '_stamp', 'array(', "array('X', ", 'builtin_interfaces', 'changed_parameters', 'deleted_parameters', 'double', 'float', 'int16', 'int32', 'int64', 'int8', 'msg', 'new_parameters', 'node', 'rcl_interfaces', 'stamp', 'string', 'uint16', 'uint32', 'uint64', 'uint8']

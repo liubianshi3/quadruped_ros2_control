@@ -1,4 +1,0 @@
-# file: /usr/lib/python3/dist-packages/_pytest/fixtures.py
-# hypothesis_version: 6.150.2
-
-['%s:%d', '%s:%d:  def %s%s', ', ', '.', ':\n\n', 'Deque[nodes.Item]', 'FixtureDef[Any]', 'FixtureDef[object]', 'FixtureManager', 'FixtureRequest', 'Function', 'Metafunc', 'NoReturn', 'Session', 'SubRequest', '_FixtureFunction', '_FixtureValue', '_Scope', '__init__.py', '__self__', '_fixturedef', 'args', 'class', 'conftest.py', 'def', 'file {}, line {}', 'fixturenames', 'funcmanage', 'function', 'indirect', 'module', 'nofuncargs', 'package', 'param', 'parametrize', 'request', 'session', 'usefixtures', '{}       {}', '{}/{}', '{}:{}']

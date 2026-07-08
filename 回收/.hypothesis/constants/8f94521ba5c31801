@@ -1,4 +1,0 @@
-# file: /usr/lib/python3/dist-packages/_pytest/hookspec.py
-# hypothesis_version: 6.150.2
-
-['CallInfo[Any]', 'CallInfo[None]', 'CollectReport', 'Collector', 'Config', 'ExceptionRepr', 'ExitCode', 'FixtureDef[Any]', 'Function', 'Item', 'Metafunc', 'Module', 'Optional[Collector]', 'Optional[Item]', 'Parser', 'PyCollector', 'PytestPluginManager', 'Session', 'SubRequest', 'TerminalReporter', 'TestReport', '_PluggyPlugin', 'pdb.Pdb', 'pytest']

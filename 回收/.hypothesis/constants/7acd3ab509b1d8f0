@@ -1,4 +1,0 @@
-# file: /usr/lib/python3/dist-packages/coverage/control.py
-# hypothesis_version: 6.150.2
-
-[' (disabled)', ', ', '-none-', 'COV', 'COVERAGE_DEBUG_CALLS', 'CTracer', 'HOME', 'MISSING', 'PY', 'TEMP', 'TMP', '_', '_list', 'argv', 'available', 'command_line', 'config', 'config_contents', 'config_file', 'configs_attempted', 'configs_read', 'coverage', 'coverage_module', 'coverage_version', 'cwd', 'data_file', 'def_encoding', 'dynamic-conflict', 'end', 'environment', 'exclude', 'executable', 'fs_encoding', 'get_data', 'implementation', 'multiprocessing', 'no-data-collected', 'none', 'path', 'pid', 'platform', 'plugins.configurers', 'plugins.file_tracers', 'process', 'python', 'sys', 'sys: ', 'test_function', 'trace', 'tracer', 'unavailable']

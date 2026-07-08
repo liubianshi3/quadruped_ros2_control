@@ -1,4 +1,0 @@
-# file: /usr/lib/python3/dist-packages/pytest_cov/compat.py
-# hypothesis_version: 6.150.2
-
-['_testsfailed', 'hookimpl', 'testsfailed']

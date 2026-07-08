@@ -1,4 +1,0 @@
-# file: /opt/ros/humble/local/lib/python3.10/dist-packages/rcl_interfaces/srv/_set_parameters_atomically.py
-# hypothesis_version: 6.150.2
-
-['%s(%s)', ')', ', ', '.', '=', 'Parameter', 'SetParametersResult', '[]', '_', '_parameters', '_result', 'array(', "array('X', ", 'double', 'float', 'int16', 'int32', 'int64', 'int8', 'msg', 'parameters', 'rcl_interfaces', 'result', 'uint16', 'uint32', 'uint64', 'uint8']

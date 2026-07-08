@@ -1,4 +1,0 @@
-# file: /usr/lib/python3/dist-packages/lark/tree.py
-# hypothesis_version: 6.150.2
-
-[8421504, 16777215, '#%x', '%s', 'LR', 'List[TerminalDef]', 'Token', 'Tree(%r, %r)', 'Tree[_Leaf_T]', '_Leaf_T', '_meta', 'children', 'data', 'digraph', 'filled', 'rule']

@@ -1,4 +1,0 @@
-# file: /usr/lib/python3/dist-packages/numpy/typing/_array_like.py
-# hypothesis_version: 6.150.2
-
-['_DType', '_DType_co', '_ScalarType', '_T', 'dtype[Any]', 'dtype[bool_]', 'dtype[bytes_]', 'dtype[datetime64]', 'dtype[integer[Any]]', 'dtype[object_]', 'dtype[str_]', 'dtype[void]']

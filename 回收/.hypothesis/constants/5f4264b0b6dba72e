@@ -1,4 +1,0 @@
-# file: /usr/lib/python3/dist-packages/numpy/typing/_dtype_like.py
-# hypothesis_version: 6.150.2
-
-['_DType_co', 'np.dtype[np.bool_]', 'np.dtype[np.bytes_]', 'np.dtype[np.object_]', 'np.dtype[np.str_]', 'np.dtype[np.void]']

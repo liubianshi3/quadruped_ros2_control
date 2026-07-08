@@ -1,4 +1,0 @@
-# file: /usr/lib/python3/dist-packages/coverage/misc.py
-# hypothesis_version: 6.150.2
-
-[b'.', '$', '%Y-%m-%d %H:%M %z', '%d', '%d-%d', '(\\d+)', ',', '.py', 'Class', 'Plugin', '__', '_once_', 'bytes', 'defval', 'dollar', 'encoding', 's', 'sha3_256', 'strict', 'unicode', 'utf-8', 'word1', 'word2', '|']

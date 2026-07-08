@@ -1,4 +1,0 @@
-# file: /opt/ros/humble/local/lib/python3.10/dist-packages/rcl_interfaces/msg/_list_parameters_result.py
-# hypothesis_version: 6.150.2
-
-['%s(%s)', ')', ', ', '.', '=', '[]', '_', '_names', '_prefixes', 'array(', "array('X', ", 'double', 'float', 'int16', 'int32', 'int64', 'int8', 'names', 'prefixes', 'rcl_interfaces', 'sequence<string>', 'uint16', 'uint32', 'uint64', 'uint8']

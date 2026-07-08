@@ -1,4 +1,0 @@
-# file: /opt/ros/humble/local/lib/python3.10/dist-packages/rcl_interfaces/msg/_set_parameters_result.py
-# hypothesis_version: 6.150.2
-
-['%s(%s)', ')', ', ', '.', '=', '[]', '_', '_reason', '_successful', 'array(', "array('X', ", 'boolean', 'double', 'float', 'int16', 'int32', 'int64', 'int8', 'rcl_interfaces', 'reason', 'string', 'successful', 'uint16', 'uint32', 'uint64', 'uint8']

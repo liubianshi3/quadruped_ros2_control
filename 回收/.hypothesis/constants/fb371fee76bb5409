@@ -1,4 +1,0 @@
-# file: /usr/lib/python3/dist-packages/lark/parsers/lalr_interactive_parser.py
-# hypothesis_version: 6.150.2
-
-['\t- %s -> %r', '$END', 'Parser choices:', 'stack size: %s']

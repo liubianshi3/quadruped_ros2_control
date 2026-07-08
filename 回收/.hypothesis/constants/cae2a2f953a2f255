@@ -1,4 +1,0 @@
-# file: /usr/lib/python3/dist-packages/lark/parsers/lalr_analysis.py
-# hypothesis_version: 6.150.2
-
-['\n\t- ', ' * %s', '$END', '$root_', 'Reduce', 'Shift', 'end_states', 'start_states', 'states', 'tokens']

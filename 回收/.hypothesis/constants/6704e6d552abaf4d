@@ -1,4 +1,0 @@
-# file: /opt/ros/humble/local/lib/python3.10/dist-packages/rclpy/parameter_service.py
-# hypothesis_version: 6.150.2
-
-['describe_parameters', 'get_parameter_types', 'get_parameters', 'list_parameters', 'set_parameters']

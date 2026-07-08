@@ -1,4 +1,0 @@
-# file: /usr/lib/python3/dist-packages/toml/encoder.py
-# hypothesis_version: 6.150.2
-
-[' \t\n\r,', ' = ', ' }\n', '"', '%r', "'", '+00:00', ',', ', ', '.', 'Z', '[', '[[', '\\', '\\"', "\\'", '\\\\', '\\x', ']', ']\n', ']]\n', '^[A-Za-z0-9_-]+$', '__iter__', 'decode', 'e+', 'e+0', 'e-', 'e-0', 'u', 'u00', 'utf-8', 'x', '{ ', '{}']

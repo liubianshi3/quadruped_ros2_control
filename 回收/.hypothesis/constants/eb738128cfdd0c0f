@@ -1,4 +1,0 @@
-# file: /opt/ros/humble/local/lib/python3.10/dist-packages/rcl_interfaces/srv/_list_parameters.py
-# hypothesis_version: 6.150.2
-
-[18446744073709551616, '%s(%s)', ')', ', ', '.', '=', 'DEPTH_RECURSIVE', 'ListParametersResult', '[]', '_', '_depth', '_prefixes', '_result', 'array(', "array('X', ", 'depth', 'double', 'float', 'int16', 'int32', 'int64', 'int8', 'msg', 'prefixes', 'rcl_interfaces', 'result', 'sequence<string>', 'uint16', 'uint32', 'uint64', 'uint8']

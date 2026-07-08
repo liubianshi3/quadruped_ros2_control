@@ -1,4 +1,0 @@
-# file: /usr/lib/python3/dist-packages/numpy/core/defchararray.py
-# hypothesis_version: 6.150.2
-
-['!=', '<', '<=', '==', '>', '>=', 'C', 'SUbc', '__add__', '__len__', '__mod__', '__mul__', 'add', 'array', 'asarray', 'capitalize', 'center', 'count', 'decode', 'encode', 'endswith', 'equal', 'expandtabs', 'find', 'greater', 'greater_equal', 'index', 'isalnum', 'isalpha', 'isdecimal', 'isdigit', 'islower', 'isnumeric', 'isspace', 'istitle', 'isupper', 'join', 'less', 'less_equal', 'ljust', 'lower', 'lstrip', 'mod', 'multiply', 'not_equal', 'numpy', 'numpy.char', 'partition', 'replace', 'rfind', 'rindex', 'rjust', 'rpartition', 'rsplit', 'rstrip', 'split', 'splitlines', 'startswith', 'str_len', 'strip', 'swapcase', 'title', 'translate', 'upper', 'zfill']

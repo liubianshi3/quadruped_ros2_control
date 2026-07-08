@@ -1,4 +1,0 @@
-# file: /opt/ros/humble/local/lib/python3.10/dist-packages/rosidl_parser/definition.py
-# hypothesis_version: 6.150.2
-
-['Time', 'UUID', '_Constants', '_Feedback', '_FeedbackMessage', '_GetResult', '_Goal', '_Request', '_Response', '_Result', '_SendGoal', 'accepted', 'annotations', 'basepath', 'boolean', 'builtin_interfaces', 'char', 'comment', 'constants', 'content', 'double', 'elements', 'feedback', 'feedback_message', 'float', 'get_result_service', 'goal', 'goal_id', 'implicit_includes', 'int16', 'int32', 'int64', 'int8', 'language', 'locator', 'long', 'long double', 'long long', 'maximum_size', 'members', 'msg', 'name', 'namespaced_type', 'namespaces', 'octet', 'relative_path', 'request_message', 'response_message', 'result', 'send_goal_service', 'short', 'size', 'stamp', 'status', 'structure', 'text', 'type', 'typename', 'uint16', 'uint32', 'uint64', 'uint8', 'unsigned long', 'unsigned long long', 'unsigned short', 'value', 'value_type', 'verbatim', 'wchar']

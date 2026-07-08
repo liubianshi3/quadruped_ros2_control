@@ -1,4 +1,0 @@
-# file: /usr/lib/python3/dist-packages/coverage/parser.py
-# hypothesis_version: 6.150.2
-
-[128, 256, ' or ', '%10s %5s %-20r %r', '([{', ')]}', ', ', ':', '<code>', '@', 'AnnAssign', 'Arc', 'ArcStarts', 'Assert', 'Assign', 'AugAssign', 'COVERAGE_AST_DUMP', 'COVERAGE_TRACK_ARCS', 'Constant', 'Delete', 'Expr', 'False', 'Global', 'Import', 'ImportFrom', 'Name', 'NameConstant', 'None', 'Nonlocal', 'Num', 'Pass', 'True', '__debug__', '_code_object__', '_handle__', '_line__', '_missing__', 'co_firstlineno', 'co_lines', 'co_lnotab', 'ctx', 'end_lineno', 'exec', 'generator expression', 'int|None', 'lambda', 'lineno', 'lineno, cause', 'list comprehension', 'set comprehension', 'unicode', 'unicode|None', '{}# mro: {}']

@@ -1,4 +1,0 @@
-# file: /usr/lib/python3/dist-packages/numpy/polynomial/polyutils.py
-# hypothesis_version: 6.150.2
-
-[0.0, 'Complex', 'Power is too large', 'RankWarning', 'as_series', 'expected deg >= 0', 'getdomain', 'iu', 'mapdomain', 'mapparms', 'trimcoef', 'trimseq']

@@ -1,4 +1,0 @@
-# file: /usr/lib/python3/dist-packages/pluggy/hooks.py
-# hypothesis_version: 6.150.2
-
-['.', '<_HookCaller %r>', '<temp>', '__call__', '__dict__', '__multicall__', '__qualname__', '_call_history', '_impl', '_spec', '_varnames', 'getfullargspec', 'historic', 'hookwrapper', 'obj', 'optionalhook', 'plugin %r not found', 'pypy_version_info', 'self', 'tryfirst', 'trylast', 'warn_on_impl']

@@ -1,4 +1,0 @@
-# file: /usr/lib/python3/dist-packages/coverage/html.py
-# hypothesis_version: 6.150.2
-
-['%s %s', '&', '&amp;', '&lt;', '&nbsp;', '(\\A\\s+)|(\\s+$)', '(empty)', ',', ', ', ',&nbsp;&nbsp; ', '.gitignore', '.html', ':', '<', 'No data to report.', '__url__', '__version__', 'ascii', 'category', 'coverage_html.js', 'escape', 'exc', 'exc show_exc', 'exit', 'extra_css', 'favicon_32.png', 'files', 'format', 'globals', 'has_arcs', 'hash', 'html_filename', 'htmlfiles', 'index', 'index.html', 'keybd_closed.png', 'keybd_open.png', 'len', 'mis', 'mis show_mis', 'nums', 'pair', 'par', 'par run show_par', 'pln', 'pyfile.html', 'relative_filename', 'run', 'show_contexts', 'skipped_covered_msg', 'skipped_empty_msg', 'status.json', 'style.css', 'time_stamp', 'title', 'totals', 'utf-8', 'version', 'w', 'wb', 'ws', 'xmlcharrefreplace']

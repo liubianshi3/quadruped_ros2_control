@@ -1,4 +1,0 @@
-# file: /usr/lib/python3/dist-packages/attr/validators.py
-# hypothesis_version: 6.150.2
-
-[' {iterable!r}', '(?:{})\\Z', ', ', 'None', 'and_', 'deep_iterable', 'deep_mapping', 'fullmatch', 'in_', 'instance_of', 'is_callable', 'matches_re', 'optional', 'provides']

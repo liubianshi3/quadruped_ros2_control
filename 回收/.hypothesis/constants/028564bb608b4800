@@ -1,4 +1,0 @@
-# file: /opt/ros/humble/local/lib/python3.10/dist-packages/rclpy/waitable.py
-# hypothesis_version: 6.150.2
-
-['num_clients', 'num_events', 'num_guard_conditions', 'num_services', 'num_subscriptions', 'num_timers']

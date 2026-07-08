@@ -1,4 +1,0 @@
-# file: /opt/ros/humble/local/lib/python3.10/dist-packages/rclpy/impl/rcutils_logger.py
-# hypothesis_version: 6.150.2
-
-[1000000000.0, '.', 'CallerId', 'file_path', 'filters', 'function_name', 'has_been_logged_once', 'last_index', 'line_number', 'name', 'once', 'severity', 'skip_first', 'throttle', 'throttle_last_logged']

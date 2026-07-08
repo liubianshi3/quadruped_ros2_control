@@ -1,4 +1,0 @@
-# file: /opt/ros/humble/local/lib/python3.10/dist-packages/rclpy/qos.py
-# hypothesis_version: 6.150.2
-
-[', ', 'AUTOMATIC', 'BEST_EFFORT', 'Invalid QoSProfile', 'KEEP_ALL', 'KEEP_LAST', 'MANUAL_BY_TOPIC', 'RELIABLE', 'RMW', 'SYSTEM_DEFAULT', 'TRANSIENT_LOCAL', 'UNKNOWN', 'VOLATILE', '_', '_deadline', '_depth', '_durability', '_history', '_lifespan', '_liveliness', '_reliability', 'deadline', 'depth', 'durability', 'history', 'lifespan', 'liveliness', 'qos_profile_default', 'qos_profile_unknown', 'reliability']

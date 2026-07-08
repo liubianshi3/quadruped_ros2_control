@@ -1,4 +1,0 @@
-# file: /usr/lib/python3/dist-packages/py/_error.py
-# hypothesis_version: 6.150.2
-
-[267, '%s%r', '%s.%s %r: %s ', 'UnknownErrno%d', '[%s]: %s', '_', '__doc__', '__module__', 'errno', 'py.error']

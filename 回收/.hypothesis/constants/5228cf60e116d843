@@ -1,4 +1,0 @@
-# file: /usr/lib/python3/dist-packages/numpy/core/__init__.py
-# hypothesis_version: 6.150.2
-
-['1', 'GOTOBLAS_MAIN_FREE', 'OPENBLAS_MAIN_FREE', '_multiarray_umath', 'char', 'chararray', 'dtype', 'format_parser', 'memmap', 'numpy', 'rec', 'recarray', 'record']

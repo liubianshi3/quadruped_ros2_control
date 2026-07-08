@@ -1,4 +1,0 @@
-# file: /opt/ros/humble/local/lib/python3.10/dist-packages/rclpy/topic_endpoint_info.py
-# hypothesis_version: 6.150.2
-
-['.', '02x', 'QoS profile:', '_', '_endpoint_gid', '_endpoint_type', '_node_name', '_node_namespace', '_qos_profile', '_topic_type', 'endpoint_gid', 'endpoint_type', 'node_name', 'node_namespace', 'qos_profile', 'topic_type']

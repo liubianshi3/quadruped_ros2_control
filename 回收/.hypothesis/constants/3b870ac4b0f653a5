@@ -1,4 +1,0 @@
-# file: /usr/lib/python3/dist-packages/numpy/ctypeslib.py
-# hypothesis_version: 6.150.2
-
-[',', '.%s-%s.so', '1.0.1', '<', '=', '>', 'ALIGNED', 'C_CONTIGUOUS', 'F_CONTIGUOUS', 'MULTIARCH', 'OWNDATA', 'Overlapping fields', 'S', 'SOABI', 'UPDATEIFCOPY', 'WRITEABLE', 'WRITEBACKIFCOPY', '_', '_%dd', '_dtype_', '_flags_', '_ndim_', '_shape_', 'any', 'as_array', 'as_ctypes', 'as_ctypes_type', 'c_intp', 'data', 'load_library', 'ndpointer', 'ndpointer_%s', 'shape', 'strides', 'struct', 'typestr', 'union', 'version', 'x']

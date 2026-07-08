@@ -1,4 +1,0 @@
-# file: /usr/lib/python3/dist-packages/numpy/core/_ufunc_config.py
-# hypothesis_version: 6.150.2
-
-[10000000.0, 'call', 'divide', 'errstate', 'getbufsize', 'geterr', 'geterrcall', 'ignore', 'invalid', 'log', 'numpy', 'over', 'print', 'raise', 'setbufsize', 'seterr', 'seterrcall', 'under', 'warn', 'write']

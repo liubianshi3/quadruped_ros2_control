@@ -1,4 +1,0 @@
-# file: /usr/lib/python3/dist-packages/coverage/numbits.py
-# hypothesis_version: 6.150.2
-
-[b'\x00', 'Iterable', 'blob', 'bool', 'int', 'list[int]', 'num_in_numbits', 'numbits_intersection', 'numbits_to_nums', 'numbits_union']

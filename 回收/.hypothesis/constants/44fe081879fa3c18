@@ -1,4 +1,0 @@
-# file: /opt/ros/humble/local/lib/python3.10/dist-packages/rcl_interfaces/msg/_parameter_descriptor.py
-# hypothesis_version: 6.150.2
-
-[256, '%s(%s)', ')', ', ', '.', '=', 'FloatingPointRange', 'IntegerRange', 'READ_ONLY__DEFAULT', '[]', '_', '_description', '_dynamic_typing', '_integer_range', '_name', '_read_only', '_type', 'array(', "array('X', ", 'boolean', 'description', 'double', 'dynamic_typing', 'float', 'floating_point_range', 'int16', 'int32', 'int64', 'int8', 'integer_range', 'msg', 'name', 'rcl_interfaces', 'read_only', 'string', 'type', 'uint16', 'uint32', 'uint64', 'uint8']

@@ -1,4 +1,0 @@
-# file: /usr/lib/python3/dist-packages/numpy/typing/_generic_alias.py
-# hypothesis_version: 6.150.2
-
-[', ', '...', 'NDArray', 'ScalarType', '_GenericAlias', '_T', '__args__', '__copy__', '__deepcopy__', '__mro_entries__', '__origin__', '__parameters__', '__reduce__', '__reduce_ex__', '__weakref__', '_args', '_hash', '_origin', '_parameters', 'builtins']

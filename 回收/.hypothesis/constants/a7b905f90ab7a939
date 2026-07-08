@@ -1,4 +1,0 @@
-# file: /usr/lib/python3/dist-packages/coverage/jsonreport.py
-# hypothesis_version: 6.150.2
-
-['JSON report', 'branch_coverage', 'contexts', 'covered_branches', 'covered_lines', 'excluded_lines', 'executed_lines', 'files', 'meta', 'missing_branches', 'missing_lines', 'num_branches', 'num_partial_branches', 'num_statements', 'percent_covered', 'show_contexts', 'summary', 'timestamp', 'totals', 'version']

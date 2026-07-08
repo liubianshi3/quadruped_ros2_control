@@ -1,4 +1,0 @@
-# file: /usr/lib/python3/dist-packages/pytest_cov/embed.py
-# hypothesis_version: 6.150.2
-
-[128, 1000, 'COV_CORE_BRANCH', 'COV_CORE_CONFIG', 'COV_CORE_CONTEXT', 'COV_CORE_DATAFILE', 'COV_CORE_SOURCE', 'enabled']

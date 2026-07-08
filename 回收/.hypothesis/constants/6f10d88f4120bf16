@@ -1,4 +1,0 @@
-# file: /usr/lib/python3/dist-packages/_pytest/_code/code.py
-# hypothesis_version: 6.150.2
-
-[', ', '-', '<', '<{} {} tblen={}>', '>', '?', '???', '@', 'AssertionError: ', 'Code', 'E', 'ExceptionChainRepr', 'ExceptionInfo[_E]', 'Literal[True]', 'ReprEntry', 'ReprEntryNative', 'ReprExceptionInfo', 'ReprFileLocation', 'ReprFuncArgs', 'ReprLocals', 'ReprTraceback', 'Source', 'Traceback', '_ ', '_E', '_TracebackStyle', '__builtins__', '__init__.py', '__tracebackhide__', '_excinfo', '_rawentry', '_repr_style', 'auto', 'eval', 'in %s', 'line', 'long', 'msg', 'native', 'no', 'no current exception', 'oc', 'place_as', 'raw', 'short', 'value', '{}\n{}\n{}']

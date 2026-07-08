@@ -1,4 +1,0 @@
-# file: /usr/lib/python3/dist-packages/py/_builtin.py
-# hypothesis_version: 6.150.2
-
-[', ', '__code__', '__dict__', '__self__', '__traceback__', 'end', 'exec', 'file', 'func_code', 'im_self', 'r', 'sep']

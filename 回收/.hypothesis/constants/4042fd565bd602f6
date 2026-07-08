@@ -1,4 +1,0 @@
-# file: /usr/lib/python3/dist-packages/coverage/tomlconfig.py
-# hypothesis_version: 6.150.2
-
-['.', '^\\[tool\\.coverage\\.', 'a boolean', 'a float', 'a list', 'an integer', 'tomli', 'tool.coverage.', 'utf-8']

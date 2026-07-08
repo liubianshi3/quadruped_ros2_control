@@ -1,4 +1,0 @@
-# file: /usr/lib/python3/dist-packages/coverage/summary.py
-# hypothesis_version: 6.150.2
-
-['   %s', '   Missing', ' %6d %6d', ' Branch BrPart', ' Stmts   Miss', '%%%ds%%%%', '%%- %ds  ', '%*s', '%6d %6d', '%s   %s: %s', '+', '-', 'Cover', 'Name', 'No data to report.', 'TOTAL', 'name', 's']

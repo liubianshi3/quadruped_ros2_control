@@ -1,4 +1,0 @@
-# file: /usr/lib/python3/dist-packages/numpy/__init__.py
-# hypothesis_version: 6.150.2
-
-[1e-05, 1.0, 2.0, 3.0, '.', 'Arrayterator', 'Tester', '__version__', 'bool', 'bool_', 'closest-tag', 'complex', 'complex128', 'ctypeslib', 'darwin', 'fft', 'float', 'float64', 'full-revisionid', 'fv', 'ignore', 'int', 'ipmt', 'irr', 'linalg', 'linux', 'long', 'ma', 'mirr', 'nper', 'npv', 'object', 'pmt', 'ppmt', 'pv', 'random', 'rate', 'removed', 'show_config', 'str', 'str_', 'testing', 'typeDict', 'unicode', 'version', '{}: {}']

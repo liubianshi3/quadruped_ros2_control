@@ -1,4 +1,0 @@
-# file: /usr/lib/python3/dist-packages/coverage/env.py
-# hypothesis_version: 6.150.2
-
-['+', 'COVERAGE_COVERAGE', 'COVERAGE_TESTING', 'COVERAGE_TEST_TRACER', 'CPython', 'IronPython', 'Jython', 'PyPy', 'True', 'alpha', 'beta', 'c', 'darwin', 'linux', 'win32']

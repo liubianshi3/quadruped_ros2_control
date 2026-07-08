@@ -1,4 +1,0 @@
-# file: /opt/ros/humble/local/lib/python3.10/dist-packages/rcl_interfaces/msg/_floating_point_range.py
-# hypothesis_version: 6.150.2
-
-[-1.7976931348623157e+308, 1.7976931348623157e+308, '%s(%s)', ')', ', ', '.', '=', '[]', '_', '_from_value', '_step', '_to_value', 'array(', "array('X', ", 'double', 'float', 'from_value', 'int16', 'int32', 'int64', 'int8', 'rcl_interfaces', 'step', 'to_value', 'uint16', 'uint32', 'uint64', 'uint8']

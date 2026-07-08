@@ -1,4 +1,0 @@
-# file: /home/dell/aperfect/carbot_ws/presentation_viz/data_models.py
-# hypothesis_version: 6.150.2
-
-[0.0, 1.0, 'TimeSeriesData', 'continuous', 'fixed', 'floating', 'mass', 'planar', 'prismatic', 'revolute', 'xy', 'xz', 'yz']

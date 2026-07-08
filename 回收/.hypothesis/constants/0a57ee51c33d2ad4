@@ -1,4 +1,0 @@
-# file: /usr/lib/python3/dist-packages/pluggy/callers.py
-# hypothesis_version: 6.150.2
-
-['%d meths', '%d results, ', '__multicall__', 'did not yield', 'has second yield', 'results']

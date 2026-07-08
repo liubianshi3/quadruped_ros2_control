@@ -1,4 +1,0 @@
-# file: /usr/lib/python3/dist-packages/coverage/plugin.py
-# hypothesis_version: 6.150.2
-
-['file_reporter', 'lines', 'rb', 'source_filename', 'txt', 'unicode', 'utf-8']

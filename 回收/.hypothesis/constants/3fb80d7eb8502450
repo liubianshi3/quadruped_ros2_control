@@ -1,4 +1,0 @@
-# file: /opt/ros/humble/local/lib/python3.10/dist-packages/rosgraph_msgs/msg/_clock.py
-# hypothesis_version: 6.150.2
-
-['%s(%s)', ')', ', ', '.', '=', 'Time', '[]', '_', '_clock', 'array(', "array('X', ", 'builtin_interfaces', 'clock', 'double', 'float', 'int16', 'int32', 'int64', 'int8', 'msg', 'rosgraph_msgs', 'uint16', 'uint32', 'uint64', 'uint8']

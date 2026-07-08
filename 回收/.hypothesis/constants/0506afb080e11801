@@ -1,4 +1,0 @@
-# file: /home/dell/aperfect/carbot_ws/presentation_viz/config_manager.py
-# hypothesis_version: 6.150.2
-
-[300, 600, '#', '#00bcd4', '#2b2b2b', '#ff9800', ')', '/imu/data', '/joint_states', '/odom', 'Arial', 'background_color', 'color_scheme', 'dark_tech', 'data_sources', 'directory', 'dpi', 'font_family', 'font_size_label', 'font_size_title', 'format', 'imu_topic', 'joint_states_topic', 'jpeg', 'jpg', 'odom_topic', 'output', 'pdf', 'png', 'presentation_outputs', 'preview_enabled', 'primary_color', 'r', 'rgb(', 'secondary_color', 'style', 'svg', 'urdf_path', 'utf-8']

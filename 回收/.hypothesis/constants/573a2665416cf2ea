@@ -1,4 +1,0 @@
-# file: /usr/lib/python3/dist-packages/lark/lexer.py
-# hypothesis_version: 6.150.2
-
-[b'\n', '$', '%s(%r, %r)', '(?%s:%s)', '(?P<%s>%s)', '(?s', '.', '<END-OF-FILE>', 'LexerConf', 'Token', 'Token(%r, %r)', '[^', '\\n', '\\s', '_T', '__', '_width', 'char_pos', 'column', 'end_column', 'end_line', 'end_pos', 'flags', 'last_token', 'latin-1', 'line', 'line_ctr', 'line_start_pos', 'name', 'newline_char', 'pattern', 'priority', 're', 'start_pos', 'str', 'text', 'type', 'value', '|']

@@ -1,4 +1,0 @@
-# file: /opt/ros/humble/local/lib/python3.10/dist-packages/rcl_interfaces/msg/_log.py
-# hypothesis_version: 6.150.2
-
-[b'\n', b'\x14', b'\x1e', b'(', b'2', 256, 4294967296, '%s(%s)', ')', ', ', '.', '=', 'DEBUG', 'ERROR', 'FATAL', 'INFO', 'Time', 'WARN', '[]', '_', '_file', '_function', '_level', '_line', '_msg', '_name', '_stamp', 'array(', "array('X', ", 'builtin_interfaces', 'double', 'file', 'float', 'function', 'int16', 'int32', 'int64', 'int8', 'level', 'line', 'msg', 'name', 'rcl_interfaces', 'stamp', 'string', 'uint16', 'uint32', 'uint64', 'uint8']

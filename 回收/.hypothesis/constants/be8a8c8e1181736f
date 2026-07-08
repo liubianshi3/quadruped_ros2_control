@@ -1,4 +1,0 @@
-# file: /usr/lib/python3/dist-packages/numpy/core/memmap.py
-# hypothesis_version: 6.150.2
-
-[b'\x00', -100.0, 'C', '_mmap', 'b', 'c', 'copyonwrite', 'flush', 'memmap', 'name', 'numpy', 'r', 'r+', 'read', 'readonly', 'readwrite', 'shape must be given', 'w+', 'write']

@@ -1,7 +1,0 @@
-1772191412.3671293 [INFO] [launch]: All log files can be found below /home/dell/aperfect/carbot_ws/.ros_log/2026-02-27-19-23-32-366662-dell-Precision-3680-64228
-1772191412.3672009 [INFO] [launch]: Default logging verbosity is set to INFO
-1772191412.4527020 [INFO] [robot_state_publisher-1]: process started with pid [64231]
-1772191412.4527972 [INFO] [joint_state_publisher_gui-2]: process started with pid [64233]
-1772191412.4528306 [INFO] [rviz2-3]: process started with pid [64235]
-1772191459.4142997 [INFO] [rviz2-3]: process has finished cleanly [pid 64235]
-1772191460.7071552 [INFO] [joint_state_publisher_gui-2]: process has finished cleanly [pid 64233]

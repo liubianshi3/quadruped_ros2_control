@@ -1,4 +1,0 @@
-# file: /usr/lib/python3/dist-packages/coverage/version.py
-# hypothesis_version: 6.150.2
-
-['%d.%d', '.%d', '/en/', 'a', 'alpha', 'b', 'beta', 'candidate', 'final', 'rc']

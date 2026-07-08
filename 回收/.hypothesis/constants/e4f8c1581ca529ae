@@ -1,4 +1,0 @@
-# file: /usr/lib/python3/dist-packages/py/_vendored_packages/apipkg/__init__.py
-# hypothesis_version: 6.150.2
-
-['%s.%s', '.', ':', '<ApiModule %r %s>', '<ApiModule %r>', '__dict__', '__doc__', '__file__', '__loader__', '__onfirstaccess__', '__package__', '__path__', '__pyclasspath__', '__version__', 'bpython', 'from ', 'some', 'version=']

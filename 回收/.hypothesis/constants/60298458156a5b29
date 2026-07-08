@@ -1,4 +1,0 @@
-# file: /usr/lib/python3/dist-packages/_pytest/doctest.py
-# hypothesis_version: 6.150.2
-
-[b'distutils', b'setuptools', '%03d %s', '--doctest-glob', '--doctest-modules', '--doctest-report', '...', '.py', '.rst', '.txt', '>>>', 'ALLOW_BYTES', 'ALLOW_UNICODE', 'Darwin', 'DoctestModule', 'DoctestTextfile', 'ELLIPSIS', 'NUMBER', 'Quitting debugger', '[doctest] %s', '\\1\\2', '__main__', '__name__', 'append', 'args', 'capturemanager', 'cdiff', 'collect', 'conftest.py', 'doctest.DocTest', 'doctest.Example', 'doctest_encoding', 'doctest_namespace', 'doctest_optionflags', 'doctestglob', 'doctestmodules', 'doctestreport', 'exponent1', 'exponent2', 'fget', 'fraction', 'importmode', 'ndiff', 'none', 'only_first_failure', 'pat', 'session', 'setup.py', 'store_true', 'test*.txt', 'udiff', 'usepdb', 'utf-8']

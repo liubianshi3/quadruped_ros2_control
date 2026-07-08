@@ -1,4 +1,0 @@
-# file: /usr/lib/python3/dist-packages/attr/__init__.py
-# hypothesis_version: 6.150.2
-
-[' <', '21.2.0', '>', 'Attribute', 'Factory', 'Hynek Schlawack', 'MIT', 'NOTHING', 'asdict', 'assoc', 'astuple', 'attr', 'attrib', 'attributes', 'attrs', 'cmp_using', 'converters', 'evolve', 'exceptions', 'fields', 'fields_dict', 'filters', 'get_run_validators', 'has', 'hs@ox.cx', 'ib', 'make_class', 'resolve_types', 's', 'set_run_validators', 'setters', 'validate', 'validators']

@@ -1,4 +1,0 @@
-# file: /usr/lib/python3/dist-packages/lark/grammar.py
-# hypothesis_version: 6.150.2
-
-['%s(%r)', '%s(%r, %r)', '<%s : %s>', 'Rule(%r, %r, %r, %r)', '_hash', 'alias', 'empty_indices', 'expand1', 'expansion', 'filter_out', 'keep_all_tokens', 'name', 'options', 'order', 'origin', 'priority', 'template_source']

@@ -1,4 +1,0 @@
-# file: /usr/lib/python3/dist-packages/_pytest/assertion/truncate.py
-# hypothesis_version: 6.150.2
-
-['...', 'BUILD_NUMBER', 'CI', "use '-vv' to show"]

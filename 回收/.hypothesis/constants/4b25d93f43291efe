@@ -1,4 +1,0 @@
-# file: /usr/lib/python3/dist-packages/coverage/pytracer.py
-# hypothesis_version: 6.150.2
-
-[' / ', ' {}', ' | ', '---\nX', '.{:x}.{:x}', '/', '/tmp/debug_trace.txt', '>', '???', 'YIELD_VALUE', 'a', 'call', 'co', 'f_lasti', 'in_atexit', 'line', 'return', 'trace-changed', '{} {}[{}]']

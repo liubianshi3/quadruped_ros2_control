@@ -1,4 +1,0 @@
-# file: /usr/lib/python3/dist-packages/coverage/python.py
-# hypothesis_version: 6.150.2
-
-[b'\n', b'\x0c', b'\r', b'\r\n', b' ', '$py.class', '.', '.egg', '.pex', '.py', '.pyc', '.pyo', '.pyw', '.zip', '__file__', '__init__', '__init__.', '__name__', 'bytes', 'bytes|None', 'exclude', 'rb', 'replace', 'unicode', 'w']

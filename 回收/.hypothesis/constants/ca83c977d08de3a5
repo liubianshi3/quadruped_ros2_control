@@ -1,4 +1,0 @@
-# file: /opt/ros/humble/local/lib/python3.10/dist-packages/rclpy/node.py
-# hypothesis_version: 6.150.2
-
-[0.0, 1e-06, 1.0, '/', '/parameter_events', 'MsgType', 'SrvType', 'SrvTypeRequest', 'SrvTypeResponse', 'Wrong parameter type', '_', 'cannot create node']

@@ -1,4 +1,0 @@
-# file: /usr/lib/python3/dist-packages/_pytest/helpconfig.py
-# hypothesis_version: 6.150.2
-
-['  %s', '--debug', '--help', '--override-ini', '--trace-config', '--traceconfig', '--version', '-V', '-h', '-o', '-p', '.', 'PYTEST_ADDOPTS', 'PYTEST_DEBUG', 'PYTEST_PLUGINS', '__file__', 'active plugins:', 'after_preparse', 'append', 'count', 'debug', 'debugconfig', 'help', 'name', 'override_ini', 'plugins', 'pytest_plugins', 'pytestdebug.log', 'store_true', 'string', 'terminalreporter', 'version', 'w', 'warning : ', 'warnings']

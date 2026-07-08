@@ -1,4 +1,0 @@
-# file: /home/dell/aperfect/carbot_ws/presentation_viz/ros2_data_collector.py
-# hypothesis_version: 6.150.2
-
-[1000000000.0, 10000, 'Data buffer cleared', 'Imu', 'JointState', 'No data collected', 'No data to save', 'Odometry', '_is_recording', '_mock_mode', 'collection_start', 'imu_ax', 'imu_ay', 'imu_az', 'imu_gx', 'imu_gy', 'imu_gz', 'num_samples', 'odom_qw', 'odom_qx', 'odom_qy', 'odom_qz', 'odom_x', 'odom_y', 'odom_z', 'timestamp', 'topics']

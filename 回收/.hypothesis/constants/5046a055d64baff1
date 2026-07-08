@@ -1,4 +1,0 @@
-# file: /usr/lib/python3/dist-packages/numpy/__config__.py
-# hypothesis_version: 6.150.2
-
-[200, '    %s = %s', '    baseline = %s', '    found = %s', '    not found = %s', '  NOT AVAILABLE', ' ...\n... ', ',', '.libs', '/usr/include', '/usr/local/include', ':', 'HAVE_CBLAS', 'NO_ATLAS_INFO', 'PATH', '_', '_info', 'blas', 'c', 'define_macros', 'f77', 'get_info', 'include_dirs', 'language', 'lapack', 'libraries', 'library_dirs', 'show', 'sources', 'win32']

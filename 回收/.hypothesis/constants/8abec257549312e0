@@ -1,4 +1,0 @@
-# file: /usr/lib/python3/dist-packages/numpy/typing/__init__.py
-# hypothesis_version: 6.150.2
-
-['ArrayLike', 'DTypeLike', 'NBitBase', 'NDArray', '_128Bit', '_16Bit', '_256Bit', '_32Bit', '_64Bit', '_80Bit', '_8Bit', '_96Bit']

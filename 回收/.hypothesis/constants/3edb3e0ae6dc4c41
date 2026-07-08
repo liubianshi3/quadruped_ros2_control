@@ -1,4 +1,0 @@
-# file: /opt/ros/humble/local/lib/python3.10/dist-packages/rcl_interfaces/srv/_describe_parameters.py
-# hypothesis_version: 6.150.2
-
-['%s(%s)', ')', ', ', '.', '=', 'ParameterDescriptor', '[]', '_', '_descriptors', '_names', 'array(', "array('X', ", 'descriptors', 'double', 'float', 'int16', 'int32', 'int64', 'int8', 'msg', 'names', 'rcl_interfaces', 'sequence<string>', 'uint16', 'uint32', 'uint64', 'uint8']
