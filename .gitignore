@@ -13,12 +13,22 @@ __pycache__/
 *.pyd
 .venv/
 .hypothesis/
+.pytest_cache/
 
 # Editor/OS
 .vscode/
 .idea/
+.cursor/
 .DS_Store
 .Trash-1000/
 .codex
 .codex/
 archives/
+
+# Scratch / temp
+.tmp/
+
+# Generated artifacts (regenerate from source, do not commit)
+frames_*.gv
+frames_*.pdf
+*_generated.urdf
