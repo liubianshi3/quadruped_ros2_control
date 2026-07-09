@@ -8,22 +8,32 @@ Dog2 Xacro 可视化 Launch 文件
 """
 
 from launch import LaunchDescription
-from launch.substitutions import Command, PathJoinSubstitution
+from launch.actions import DeclareLaunchArgument
+from launch.substitutions import Command, LaunchConfiguration, PathJoinSubstitution, PythonExpression
 from launch_ros.actions import Node
 from launch_ros.substitutions import FindPackageShare
 from launch_ros.parameter_descriptions import ParameterValue
-import os
 
 
 def generate_launch_description():
-    # 获取包路径
-    pkg_share = FindPackageShare(package='dog2_description').find('dog2_description')
-    
-    # Xacro 文件路径
-    xacro_file = os.path.join(pkg_share, 'urdf', 'dog2.urdf.xacro')
-    
-    # RViz 配置文件路径
-    rviz_config_path = os.path.join(pkg_share, 'rviz', 'dog2.rviz')
+    model_variant = LaunchConfiguration('model_variant')
+    xacro_filename = PythonExpression([
+        "'dog2_symmetric.urdf.xacro' if '",
+        model_variant,
+        "' == 'symmetric' else 'dog2.urdf.xacro'",
+    ])
+
+    xacro_file = PathJoinSubstitution([
+        FindPackageShare('dog2_description'),
+        'urdf',
+        xacro_filename,
+    ])
+
+    rviz_config_path = PathJoinSubstitution([
+        FindPackageShare('dog2_description'),
+        'rviz',
+        'dog2.rviz',
+    ])
     
     # 使用 xacro 命令处理 xacro 文件
     # Command 会在运行时执行 xacro 命令并返回结果
@@ -63,6 +73,7 @@ def generate_launch_description():
     )
     
     return LaunchDescription([
+        DeclareLaunchArgument('model_variant', default_value='real', choices=['real', 'symmetric']),
         robot_state_publisher,
         joint_state_publisher_gui,
         rviz_node

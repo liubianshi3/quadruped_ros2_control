@@ -15,17 +15,35 @@ ros2 launch dog2_description dog2_fortress_with_gui.launch.py
 import os
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import IncludeLaunchDescription, SetEnvironmentVariable, RegisterEventHandler
+from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, SetEnvironmentVariable, RegisterEventHandler
 from launch.event_handlers import OnProcessExit
 from launch.launch_description_sources import PythonLaunchDescriptionSource
+from launch.substitutions import Command, LaunchConfiguration, PathJoinSubstitution, PythonExpression
 from launch_ros.actions import Node
-import xacro
+from launch_ros.parameter_descriptions import ParameterValue
+from launch_ros.substitutions import FindPackageShare
 
 
 def generate_launch_description():
     pkg_dog2_description = get_package_share_directory('dog2_description')
     pkg_gazebo_ros = get_package_share_directory('ros_gz_sim')
-    controllers_yaml = os.path.join(pkg_dog2_description, 'config', 'ros2_controllers.yaml')
+    controllers_yaml = PathJoinSubstitution([
+        FindPackageShare('dog2_description'),
+        'config',
+        'ros2_controllers.yaml',
+    ])
+
+    model_variant = LaunchConfiguration('model_variant')
+    xacro_filename = PythonExpression([
+        "'dog2_symmetric.urdf.xacro' if '",
+        model_variant,
+        "' == 'symmetric' else 'dog2.urdf.xacro'",
+    ])
+    xacro_file = PathJoinSubstitution([
+        FindPackageShare('dog2_description'),
+        'urdf',
+        xacro_filename,
+    ])
     
     # 设置环境变量
     gazebo_model_path = os.path.join(pkg_dog2_description, '..')
@@ -37,15 +55,12 @@ def generate_launch_description():
         value=gazebo_model_path
     )
     
-    # 处理 xacro 文件
-    xacro_file = os.path.join(pkg_dog2_description, 'urdf', 'dog2.urdf.xacro')
-    robot_description_config = xacro.process_file(
-        xacro_file,
-        mappings={
-            'controllers_yaml': controllers_yaml,
-        },
-    )
-    robot_description = {'robot_description': robot_description_config.toxml()}
+    robot_description = {
+        'robot_description': ParameterValue(
+            Command(['xacro ', xacro_file, ' controllers_yaml:=', controllers_yaml]),
+            value_type=str,
+        )
+    }
     
     # 世界文件路径
     world_file = '/usr/share/ignition/ignition-gazebo6/worlds/empty.sdf'
@@ -108,6 +123,7 @@ def generate_launch_description():
     )
     
     return LaunchDescription([
+        DeclareLaunchArgument('model_variant', default_value='real', choices=['real', 'symmetric']),
         set_gazebo_model_path,
         gazebo,
         robot_state_publisher,
