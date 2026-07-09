@@ -135,7 +135,7 @@ def create_leg_parameters() -> Dict[str, LegParameters]:
     foot4[1] += FOOT_TIP_PLUS_Y_HALF_DIAMETER_M - FOOT_TIP_MINUS_Y_ONE_AND_HALF_DIAMETER_M
     foot4[2] -= FOOT_TIP_Z_DOWN_M
 
-    urdf_joint_limits = load_dog2_urdf_joint_limits()
+    urdf_joint_limits = load_dog2_urdf_joint_limits("real")
     joint_limits_template = {
         role: tuple(limits)
         for role, limits in urdf_joint_limits.revolute_by_role.items()
@@ -247,7 +247,7 @@ def reload_leg_parameter_joint_limits_from_urdf(force_reload: bool = False) -> s
     if force_reload:
         clear_dog2_urdf_joint_limits_cache()
 
-    urdf_joint_limits = load_dog2_urdf_joint_limits()
+    urdf_joint_limits = load_dog2_urdf_joint_limits("real")
     for leg_id, params in LEG_PARAMETERS.items():
         params.joint_limits["rail"] = urdf_joint_limits.rail_by_leg[leg_id]
         for role, limits in urdf_joint_limits.revolute_by_role.items():

@@ -8,7 +8,7 @@ spider_robot_controller:
       stride_height: 0.03
       cycle_time: 1.2
       duty_factor: 0.75
-      body_height: 0.18
+      body_height: 0.20
       gait_type: "crawl"
       leg_sequence: ["leg1", "leg2", "leg3", "leg4"]
       phase_offsets:
@@ -22,27 +22,31 @@ spider_robot_controller:
         poly_order: 5
         target_landing_vel_z: 0.01
 
+    # Gazebo SPAWN pose (effort_research_sim.launch.py), NOT the MPC stand
+    # target. Spawn at full stance (tibia -1.10, h=0.268) so the mux PD can
+    # quasi-statically fold to crouch (-1.55) before WBC/MPC rises to stage-1
+    # (tibia -1.40, h=0.20 in research_mpc.yaml). Pinocchio FK feet z=-0.268.
     standing_pose:
       lf:
         rail_m: 0.0
         hip_roll_rad: 0.0
-        hip_pitch_rad: -0.3
-        knee_pitch_rad: -0.6
+        hip_pitch_rad: 1.05
+        knee_pitch_rad: -1.10
       lh:
         rail_m: 0.0
         hip_roll_rad: 0.0
-        hip_pitch_rad: -0.3
-        knee_pitch_rad: -0.6
+        hip_pitch_rad: 1.05
+        knee_pitch_rad: -1.10
       rh:
         rail_m: 0.0
         hip_roll_rad: 0.0
-        hip_pitch_rad: -0.3
-        knee_pitch_rad: -0.6
+        hip_pitch_rad: 1.05
+        knee_pitch_rad: -1.10
       rf:
         rail_m: 0.0
         hip_roll_rad: 0.0
-        hip_pitch_rad: -0.3
-        knee_pitch_rad: -0.6
+        hip_pitch_rad: 1.05
+        knee_pitch_rad: -1.10
     
     joint_limits:
       # Rotational limits now come from dog2.urdf.xacro.

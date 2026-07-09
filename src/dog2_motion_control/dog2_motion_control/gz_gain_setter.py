@@ -9,10 +9,10 @@ from rcl_interfaces.srv import SetParameters
 
 class GzGainSetter(Node):
     def __init__(self):
-        super().__init__("gz_gain_setter")
-        self.declare_parameter("target_node", "/gz_ros2_control")
-        self.declare_parameter("gain", 1.5)
-        self.declare_parameter("timeout_s", 30.0)
+        super().__init__("gz_gain_setter", automatically_declare_parameters_from_overrides=True)
+        self._declare_default_parameter("target_node", "/gz_ros2_control")
+        self._declare_default_parameter("gain", 1.5)
+        self._declare_default_parameter("timeout_s", 30.0)
 
         self._start = time.time()
         self._done = False
@@ -22,6 +22,10 @@ class GzGainSetter(Node):
         self._target_service = ""
         self._last_deferred_log = 0.0
         self._timer = self.create_timer(0.2, self._tick)
+
+    def _declare_default_parameter(self, name: str, value) -> None:
+        if not self.has_parameter(name):
+            self.declare_parameter(name, value)
 
     @property
     def done(self) -> bool:

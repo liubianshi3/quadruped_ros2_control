@@ -3,6 +3,13 @@
 # This file is loaded by the GazeboSimROS2ControlPlugin via the xacro argument
 # `controllers_yaml`. It must define controller_manager controllers and the
 # corresponding controller-specific parameters blocks.
+#
+# Rail lock architecture: the 12 rotational joints are torque-driven by the
+# WBC+MPC research stack through `effort_controller`, while the 4 prismatic
+# rail joints are claimed by `rail_position_controller` (position command
+# interface). gz_ros2_control enforces the position target inside the 1kHz
+# physics loop, which acts as a rigid lock during normal locomotion. Crossing
+# can later move the rails by streaming targets to the same controller.
 
 dog2_controller_manager:
   ros__parameters:
@@ -19,6 +26,9 @@ controller_manager:
 
     effort_controller:
       type: effort_controllers/JointGroupEffortController
+
+    rail_position_controller:
+      type: position_controllers/JointGroupPositionController
 
 # gz_ros2_control plugin parameters (applied by GazeboSimSystem).
 gz_ros_control:
@@ -38,22 +48,18 @@ joint_state_broadcaster:
 effort_controller:
   ros__parameters:
     joints:
-      - lf_rail_joint
       - lf_coxa_joint
       - lf_femur_joint
       - lf_tibia_joint
 
-      - lh_rail_joint
       - lh_coxa_joint
       - lh_femur_joint
       - lh_tibia_joint
 
-      - rh_rail_joint
       - rh_coxa_joint
       - rh_femur_joint
       - rh_tibia_joint
 
-      - rf_rail_joint
       - rf_coxa_joint
       - rf_femur_joint
       - rf_tibia_joint
@@ -63,3 +69,11 @@ effort_controller:
     state_interfaces:
       - position
       - velocity
+
+rail_position_controller:
+  ros__parameters:
+    joints:
+      - lf_rail_joint
+      - lh_rail_joint
+      - rh_rail_joint
+      - rf_rail_joint

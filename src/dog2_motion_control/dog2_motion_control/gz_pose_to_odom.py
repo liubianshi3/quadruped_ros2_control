@@ -24,6 +24,7 @@ from nav_msgs.msg import Odometry
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy, DurabilityPolicy
 from tf2_msgs.msg import TFMessage
+from tf2_ros import TransformBroadcaster
 
 
 def _normalize_quat_xyzw(q: np.ndarray) -> np.ndarray:
@@ -156,6 +157,7 @@ class GzPoseToOdom(Node):
                 qos_odom,
             )
         self._odom_pub = self.create_publisher(Odometry, self._odom_topic, qos_odom)
+        self._tf_broadcaster = TransformBroadcaster(self)
         self._prev_sample: Optional[_PoseSample] = None
         self._last_external_odom_sec: Optional[float] = None
         self._v_world_filt = np.zeros(3, dtype=float)
@@ -345,8 +347,16 @@ class GzPoseToOdom(Node):
     def _publish_odom(self, msg: Odometry) -> None:
         try:
             self._odom_pub.publish(msg)
+            tf = TransformStamped()
+            tf.header.stamp = msg.header.stamp
+            tf.header.frame_id = self._odom_frame
+            tf.child_frame_id = self._base_frame
+            tf.transform.translation.x = msg.pose.pose.position.x
+            tf.transform.translation.y = msg.pose.pose.position.y
+            tf.transform.translation.z = msg.pose.pose.position.z
+            tf.transform.rotation = msg.pose.pose.orientation
+            self._tf_broadcaster.sendTransform(tf)
         except Exception:
-            # During shutdown, context can become invalid between callback and publish.
             return
 
 

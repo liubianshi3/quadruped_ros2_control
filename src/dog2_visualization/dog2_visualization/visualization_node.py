@@ -7,6 +7,7 @@ from geometry_msgs.msg import Point
 from rclpy.node import Node
 from std_msgs.msg import Float64MultiArray
 from std_msgs.msg import ColorRGBA
+from tf2_ros import Buffer, TransformException, TransformListener
 from visualization_msgs.msg import Marker, MarkerArray
 
 from dog2_visualization.foot_force_visualizer import FootForceVisualizer
@@ -38,6 +39,9 @@ class VisualizationNode(Node):
         self.max_history_points = 200
 
         self.foot_force_viz = FootForceVisualizer(frame_id="base_link")
+        self.foot_frames = ["lf_foot_link", "lh_foot_link", "rh_foot_link", "rf_foot_link"]
+        self.tf_buffer = Buffer()
+        self.tf_listener = TransformListener(self.tf_buffer, self)
 
         self._init_subscribers()
         self._init_publishers()
@@ -146,11 +150,23 @@ class VisualizationNode(Node):
         if self.current_robot_state is None:
             return
 
+        self._update_foot_positions_from_tf()
         self._update_foot_force_visualization()
         self._update_trajectory_visualization()
         self._update_contact_visualization()
         self._update_wbc_status_visualization()
         self._update_performance_visualization()
+
+    def _update_foot_positions_from_tf(self):
+        positions = []
+        for frame in self.foot_frames:
+            try:
+                transform = self.tf_buffer.lookup_transform("base_link", frame, rclpy.time.Time())
+            except TransformException:
+                return
+            t = transform.transform.translation
+            positions.append(Point(x=t.x, y=t.y, z=t.z))
+        self.foot_force_viz.update_foot_positions(positions)
 
     def _grf_as_flat_list(self):
         if self.current_grf_reference is not None and len(self.current_grf_reference.forces) == 4:
@@ -228,7 +244,9 @@ class VisualizationNode(Node):
         contact_flags = self._contact_flags()
         for leg_index, point in enumerate(foot_positions):
             marker = Marker()
-            marker.header = self.current_robot_state.header
+            marker.header.frame_id = self.foot_force_viz.frame_id
+            marker.header.stamp.sec = 0
+            marker.header.stamp.nanosec = 0
             marker.ns = "contact_state"
             marker.id = leg_index
             marker.type = Marker.SPHERE

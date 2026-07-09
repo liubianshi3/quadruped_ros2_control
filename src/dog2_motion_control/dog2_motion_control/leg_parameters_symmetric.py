@@ -103,7 +103,7 @@ def create_leg_parameters_symmetric() -> Dict[str, LegParameters]:
     link_lengths = (L1, L2, L3)
 
     FOOT_TIP_LATERAL_INBOARD_M = 0.024
-    FOOT_SPHERE_RADIUS_M = 0.012
+    FOOT_SPHERE_RADIUS_M = 0.020
     FOOT_TIP_PLUS_Y_HALF_DIAMETER_M = FOOT_SPHERE_RADIUS_M
     FOOT_TIP_MINUS_Y_ONE_AND_HALF_DIAMETER_M = 3.0 * FOOT_SPHERE_RADIUS_M
     FOOT_TIP_Z_DOWN_M = (
@@ -129,17 +129,17 @@ def create_leg_parameters_symmetric() -> Dict[str, LegParameters]:
     # symmetric: foot4 = foot3
     foot4 = foot3.copy()
 
-    urdf_joint_limits = load_dog2_urdf_joint_limits()
+    urdf_joint_limits = load_dog2_urdf_joint_limits("symmetric")
     joint_limits_template = {
         role: tuple(limits)
         for role, limits in urdf_joint_limits.revolute_by_role.items()
     }
 
-    # leg1: lf, symmetric base_position (absolute CAD 0.12685,0.0625)
+    # leg1: lf, symmetric base_position (±0.122125, ±0.06)
     leg1_params = LegParameters(
         leg_id='lf',
         leg_num=1,
-        base_position=np.array([0.12685, 0.0625, 0.0]),
+        base_position=np.array([-0.122125, -0.06, 0.0]),
         base_rotation=LEG_BASE_RPY.copy(),
         hip_offset=np.array([-0.016, 0.0199, 0.055]),
         hip_rpy=COXA_ORIGIN_RPY.copy(),
@@ -157,11 +157,11 @@ def create_leg_parameters_symmetric() -> Dict[str, LegParameters]:
         rail_locked=True
     )
 
-    # leg2: lh, symmetric base_position (absolute CAD 0.3711,0.0625)
+    # leg2: lh, symmetric base_position
     leg2_params = LegParameters(
         leg_id='lh',
         leg_num=2,
-        base_position=np.array([0.3711, 0.0625, 0.0]),
+        base_position=np.array([0.122125, -0.06, 0.0]),
         base_rotation=LEG_BASE_RPY.copy(),
         hip_offset=np.array([0.016, 0.0199, 0.055]),
         hip_rpy=COXA_ORIGIN_RPY.copy(),
@@ -179,11 +179,11 @@ def create_leg_parameters_symmetric() -> Dict[str, LegParameters]:
         rail_locked=True
     )
 
-    # leg3: rh, symmetric base_position (absolute CAD 0.3711,0.1825), knee_z = -0.0274
+    # leg3: rh, symmetric base_position, knee_z = -0.0274
     leg3_params = LegParameters(
         leg_id='rh',
         leg_num=3,
-        base_position=np.array([0.3711, 0.1825, 0.0]),
+        base_position=np.array([0.122125, 0.06, 0.0]),
         base_rotation=LEG_BASE_RPY.copy(),
         hip_offset=np.array([-0.016, 0.0199, 0.055]),
         hip_rpy=COXA_ORIGIN_RPY.copy(),
@@ -201,12 +201,11 @@ def create_leg_parameters_symmetric() -> Dict[str, LegParameters]:
         rail_locked=True
     )
 
-    # leg4: rf, symmetric base_position (absolute CAD 0.12685,0.1825),
-    # hip_offset mirror of lh, knee_z = -0.0274, foot = foot3
+    # leg4: rf, symmetric base_position, hip_offset mirror of lh, knee_z = -0.0274, foot = foot3
     leg4_params = LegParameters(
         leg_id='rf',
         leg_num=4,
-        base_position=np.array([0.12685, 0.1825, 0.0]),
+        base_position=np.array([-0.122125, 0.06, 0.0]),
         base_rotation=LEG_BASE_RPY.copy(),
         hip_offset=np.array([0.016, 0.0199, 0.055]),
         hip_rpy=COXA_ORIGIN_RPY.copy(),
@@ -238,7 +237,7 @@ def reload_leg_parameter_joint_limits_from_urdf(force_reload: bool = False) -> s
     if force_reload:
         clear_dog2_urdf_joint_limits_cache()
 
-    urdf_joint_limits = load_dog2_urdf_joint_limits()
+    urdf_joint_limits = load_dog2_urdf_joint_limits("symmetric")
     for leg_id, params in LEG_PARAMETERS_SYMMETRIC.items():
         params.joint_limits["rail"] = urdf_joint_limits.rail_by_leg[leg_id]
         for role, limits in urdf_joint_limits.revolute_by_role.items():

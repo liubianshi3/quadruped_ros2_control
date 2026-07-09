@@ -12,6 +12,12 @@ from typing import Dict, List, Literal
 LegId = Literal["lf", "lh", "rh", "rf"]
 LegIndex = Literal[1, 2, 3, 4]
 
+# Canonical leg ordering for MPC/WBC/gait/mux/visualization. Any 4-element
+# array of leg prefixes on the pipeline path must match this tuple.
+# Enforced by dog2_motion_control/test/test_leg_order_canonical.py.
+LEG_ORDER: tuple = ("lf", "lh", "rh", "rf")
+FOOT_FRAME_ORDER: tuple = tuple(f"{leg}_foot_link" for leg in LEG_ORDER)
+
 # 腿编号到 URDF 前缀的映射（与 URDF 拓扑一致）
 LEG_PREFIX_MAP: Dict[int, LegId] = {1: "lf", 2: "lh", 3: "rh", 4: "rf"}
 PREFIX_TO_LEG_MAP: Dict[LegId, int] = {"lf": 1, "lh": 2, "rh": 3, "rf": 4}

@@ -52,3 +52,15 @@ def get_leg_parameters(model_variant: str):
         return LEG_PARAMETERS
     from dog2_motion_control.leg_parameters_symmetric import LEG_PARAMETERS_SYMMETRIC
     return LEG_PARAMETERS_SYMMETRIC
+
+
+def reload_leg_parameter_joint_limits(model_variant: str, force_reload: bool = False) -> str:
+    """Refresh the LegParameters joint limits for the selected model variant."""
+    v = normalize_model_variant(model_variant)
+    if v == "real":
+        from dog2_motion_control.leg_parameters import reload_leg_parameter_joint_limits_from_urdf
+    else:
+        from dog2_motion_control.leg_parameters_symmetric import (
+            reload_leg_parameter_joint_limits_from_urdf,
+        )
+    return reload_leg_parameter_joint_limits_from_urdf(force_reload=force_reload)

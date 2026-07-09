@@ -50,6 +50,12 @@ class GaitSchedulerNode(Node):
             self._on_cmd_vel,
             20,
         )
+        self.create_subscription(
+            GaitCommand,
+            str(self.get_parameter("gait_command_topic").value),
+            self._on_gait_command,
+            20,
+        )
         self._contact_pub = self.create_publisher(
             ContactPhase,
             str(self.get_parameter("contact_phase_topic").value),
@@ -69,6 +75,18 @@ class GaitSchedulerNode(Node):
             for value in [msg.linear.x, msg.linear.y, msg.angular.z]
         )
 
+    def _on_gait_command(self, msg: GaitCommand) -> None:
+        if msg.header.frame_id == self.get_name():
+            return
+        self._gait = msg.gait or self._gait
+        self._last_cmd.linear.x = float(msg.linear_x)
+        self._last_cmd.linear.y = float(msg.linear_y)
+        self._last_cmd.angular.z = float(msg.angular_z)
+        self._moving = any(
+            abs(value) > 1e-3
+            for value in [msg.linear_x, msg.linear_y, msg.angular_z]
+        )
+
     def _on_timer(self) -> None:
         self._elapsed = (self._elapsed + 1.0 / self._publish_rate) % self._cycle_time
         phase = self._elapsed / self._cycle_time
@@ -82,6 +100,7 @@ class GaitSchedulerNode(Node):
 
         gait_cmd_msg = GaitCommand()
         gait_cmd_msg.header = contact_msg.header
+        gait_cmd_msg.header.frame_id = self.get_name()
         gait_cmd_msg.gait = self._gait
         gait_cmd_msg.linear_x = float(self._last_cmd.linear.x)
         gait_cmd_msg.linear_y = float(self._last_cmd.linear.y)

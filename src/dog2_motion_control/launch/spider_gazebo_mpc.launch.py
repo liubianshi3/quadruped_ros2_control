@@ -371,12 +371,10 @@ def generate_launch_description():
         )
 
         # === 关键 2：xacro 生成 robot_description 传入 control_mode:=effort ===
-        xacro_file = os.path.join(pkg_dog2_description, "urdf", "dog2.urdf.xacro")
         model_variant_raw = LaunchConfiguration("model_variant").perform(context).strip()
-        if model_variant_raw:
-            from dog2_motion_control.model_variant import normalize_model_variant, get_urdf_xacro_filename
-            variant = normalize_model_variant(model_variant_raw)
-            xacro_file = os.path.join(pkg_dog2_description, "urdf", get_urdf_xacro_filename(variant))
+        from dog2_motion_control.model_variant import normalize_model_variant, get_urdf_xacro_filename
+        variant = normalize_model_variant(model_variant_raw or "symmetric")
+        xacro_file = os.path.join(pkg_dog2_description, "urdf", get_urdf_xacro_filename(variant))
         robot_description_config = xacro.process_file(
             xacro_file,
             mappings={
@@ -671,6 +669,7 @@ def generate_launch_description():
                     "config_file": LaunchConfiguration("config_file"),
                     "use_sim_time": LaunchConfiguration("use_sim_time"),
                     "debug_mode": True,
+                    "model_variant": variant,
                     "odom_topic": odom_topic,
                     "use_gz_foot_contact": bridge_foot_contact,
                     "gz_contact_topic_lf": "/dog2/foot_contact/lf",
@@ -759,7 +758,7 @@ def generate_launch_description():
             model_name_arg,
             gz_world_name_arg,
             bridge_foot_contact_arg,
-            DeclareLaunchArgument("model_variant", default_value="real"),
+            DeclareLaunchArgument("model_variant", default_value="symmetric", choices=["real", "symmetric"]),
             OpaqueFunction(function=launch_setup),
         ]
     )

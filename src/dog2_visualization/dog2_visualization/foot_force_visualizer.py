@@ -40,17 +40,15 @@ class FootForceVisualizer:
         """
         self.frame_id = frame_id
         
-        # Foot positions in base_link frame (matching MPC controller)
-        # [front_left, front_right, rear_right, rear_left]
-        # 注意：这些位置应该与 mpc_node_complete.cpp 中的 base_foot_positions 一致
+        # Foot positions in base_link frame, ordered like WBC/MPC: LF, LH, RH, RF.
         self.foot_positions = [
-            Point(x=-0.2, y=-0.15, z=-0.3),  # Front left  (前左)
-            Point(x=0.2, y=-0.15, z=-0.3),   # Front right (前右)
-            Point(x=0.2, y=0.15, z=-0.3),    # Rear right  (后右)
-            Point(x=-0.2, y=0.15, z=-0.3),   # Rear left   (后左)
+            Point(x=-0.2, y=-0.15, z=-0.3),  # LF
+            Point(x=-0.2, y=0.15, z=-0.3),   # LH
+            Point(x=0.2, y=0.15, z=-0.3),    # RH
+            Point(x=0.2, y=-0.15, z=-0.3),   # RF
         ]
         
-        self.foot_names = ['FL', 'FR', 'RR', 'RL']
+        self.foot_names = ['LF', 'LH', 'RH', 'RF']
     
     def create_markers(
         self,

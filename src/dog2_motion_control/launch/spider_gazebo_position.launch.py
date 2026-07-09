@@ -132,12 +132,10 @@ def generate_launch_description():
             value=_collect_gz_resource_roots(pkg_dog2_description, pkg_dog2_description_install),
         )
 
-        xacro_file = os.path.join(pkg_dog2_description, "urdf", "dog2.urdf.xacro")
         model_variant_raw = LaunchConfiguration("model_variant").perform(context).strip()
-        if model_variant_raw:
-            from dog2_motion_control.model_variant import normalize_model_variant, get_urdf_xacro_filename
-            variant = normalize_model_variant(model_variant_raw)
-            xacro_file = os.path.join(pkg_dog2_description, "urdf", get_urdf_xacro_filename(variant))
+        from dog2_motion_control.model_variant import normalize_model_variant, get_urdf_xacro_filename
+        variant = normalize_model_variant(model_variant_raw or "symmetric")
+        xacro_file = os.path.join(pkg_dog2_description, "urdf", get_urdf_xacro_filename(variant))
         robot_description_config = xacro.process_file(
             xacro_file,
             mappings={
@@ -231,7 +229,11 @@ def generate_launch_description():
             output="screen",
             parameters=[
                 LaunchConfiguration("config_file"),
-                {"use_sim_time": LaunchConfiguration("use_sim_time"), "debug_mode": True},
+                {
+                    "use_sim_time": LaunchConfiguration("use_sim_time"),
+                    "debug_mode": True,
+                    "model_variant": variant,
+                },
             ],
         )
 
@@ -314,7 +316,7 @@ def generate_launch_description():
             use_gui_arg,
             use_sim_time_arg,
             world_arg,
-            DeclareLaunchArgument("model_variant", default_value="real"),
+            DeclareLaunchArgument("model_variant", default_value="symmetric", choices=["real", "symmetric"]),
             OpaqueFunction(function=launch_setup),
         ]
     )

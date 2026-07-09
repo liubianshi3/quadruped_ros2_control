@@ -8,6 +8,8 @@ endif()
 find_package(ament_cmake REQUIRED)
 find_package(ament_cmake_python REQUIRED)
 find_package(rclpy REQUIRED)
+find_package(nav_msgs REQUIRED)
+find_package(std_msgs REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(dog2_interfaces REQUIRED)
 
@@ -15,6 +17,7 @@ ament_python_install_package(${PROJECT_NAME})
 
 install(PROGRAMS
   dog2_gait_planner/gait_scheduler_node.py
+  dog2_gait_planner/swing_target_node.py
   DESTINATION lib/${PROJECT_NAME}
 )
 
@@ -31,6 +34,7 @@ if(BUILD_TESTING)
   set(ament_cmake_cpplint_FOUND TRUE)
   ament_lint_auto_find_test_dependencies()
   ament_add_pytest_test(test_gait_scheduler test/test_gait_scheduler.py)
+  ament_add_pytest_test(test_swing_target test/test_swing_target.py)
 endif()
 
 ament_package()

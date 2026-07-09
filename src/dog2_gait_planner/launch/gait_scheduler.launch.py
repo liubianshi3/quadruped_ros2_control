@@ -25,5 +25,14 @@ def generate_launch_description() -> LaunchDescription:
                     {"use_sim_time": LaunchConfiguration("use_sim_time")},
                 ],
             ),
+            Node(
+                package="dog2_gait_planner",
+                executable="swing_target_node.py",
+                name="dog2_swing_target",
+                output="screen",
+                parameters=[
+                    {"use_sim_time": LaunchConfiguration("use_sim_time")},
+                ],
+            ),
         ]
     )

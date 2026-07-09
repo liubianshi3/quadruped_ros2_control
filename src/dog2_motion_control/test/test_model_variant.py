@@ -6,6 +6,7 @@ from dog2_motion_control.model_variant import (
     get_leg_parameters,
     get_urdf_xacro_filename,
     normalize_model_variant,
+    reload_leg_parameter_joint_limits,
 )
 
 
@@ -41,8 +42,13 @@ def test_get_leg_parameters_symmetric():
 
     params = get_leg_parameters("symmetric")
     assert sorted(params) == ["lf", "lh", "rf", "rh"]
-    assert np.allclose(params["rf"].base_position, [0.12685, 0.1825, 0.0])
+    assert np.allclose(params["rf"].base_position, [-0.122125, 0.06, 0.0])
     assert np.allclose(
         params["rf"].foot_tip_offset_tibia,
         params["rh"].foot_tip_offset_tibia,
     )
+
+
+def test_reload_joint_limits_for_variant_uses_selected_urdf():
+    assert reload_leg_parameter_joint_limits("real").endswith("dog2.urdf.xacro")
+    assert reload_leg_parameter_joint_limits("symmetric").endswith("dog2_symmetric.urdf.xacro")

@@ -647,7 +647,7 @@ class MPCRobotController(Node):
         from .model_variant import normalize_model_variant, get_urdf_xacro_filename
 
         raw_model_variant = str(
-            self.declare_parameter("model_variant", "real").value
+            self.declare_parameter("model_variant", "symmetric").value
         ).strip()
         self._model_variant = normalize_model_variant(raw_model_variant)
         self.get_logger().info(f"MPC controller model_variant='{self._model_variant}'")

@@ -25,7 +25,7 @@ from .trajectory_planner import TrajectoryPlanner
 from .joint_controller import JointController
 from .joint_names import PREFIX_TO_LEG_MAP, get_leg_joint_names
 from .config_loader import ConfigLoader
-from .leg_parameters import reload_leg_parameter_joint_limits_from_urdf
+from .model_variant import normalize_model_variant, reload_leg_parameter_joint_limits
 
 
 class LocomotionMode(Enum):
@@ -46,7 +46,11 @@ class SpiderRobotController(Node):
         self.config_loader.load()
         gait_config = self.config_loader.get_gait_config()
 
-        self.ik_solver = create_kinematics_solver()
+        raw_model_variant = str(self.declare_parameter("model_variant", "symmetric").value)
+        self._model_variant = normalize_model_variant(raw_model_variant)
+        self.get_logger().info(f"SpiderRobotController using model_variant='{self._model_variant}'")
+
+        self.ik_solver = create_kinematics_solver(model_variant=self._model_variant)
         self.ik_solver.configure_regularization(self.config_loader.get_ik_regularization())
         self._reload_joint_limits_from_urdf(force_reload=False)
 
@@ -679,7 +683,10 @@ class SpiderRobotController(Node):
     def _reload_joint_limits_from_urdf(self, *, force_reload: bool) -> None:
         """Sync shared IK/controller joint limits from the authoritative xacro source."""
 
-        source_path = reload_leg_parameter_joint_limits_from_urdf(force_reload=force_reload)
+        source_path = reload_leg_parameter_joint_limits(
+            self._model_variant,
+            force_reload=force_reload,
+        )
         sample_leg = self.ik_solver.leg_params["lf"]
         self.get_logger().info(
             "Loaded joint limits from URDF: "

@@ -28,9 +28,12 @@ class JointController:
     def __init__(self, node: Node):
         self.node = node
 
-        raw_model_variant = str(
-            node.declare_parameter("model_variant", "real").value
-        )
+        if node.has_parameter("model_variant"):
+            raw_model_variant = str(node.get_parameter("model_variant").value)
+        else:
+            raw_model_variant = str(
+                node.declare_parameter("model_variant", "symmetric").value
+            )
         from .model_variant import normalize_model_variant, get_leg_parameters
         self._model_variant = normalize_model_variant(raw_model_variant)
         self.leg_parameters = get_leg_parameters(self._model_variant)
