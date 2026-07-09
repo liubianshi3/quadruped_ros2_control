@@ -1,5 +1,37 @@
 # DEVELOPMENT_LOG
 
+## 2026-07-08 11:35 导轨位置锁根因修复 + pinocchio 4.0 迁移，effort 研究栈冒烟全绿
+
+- **背景与目标**
+  - 方案 A（rail_position_controller 位置锁 + 12 通道 effort_controller）在 07-03 已落地代码，但从未跑通：导轨在 spawn 落地后漂到 0.04 m 并保持不动，位置锁看似"激活成功"却完全不起作用。
+  - 本轮目标：让 effort 研究栈冒烟测试（站立 → 前进 → 转向，导轨漂移 ≤ 5 mm）全绿。
+
+- **环境断裂修复：pinocchio 3.9 → 4.0（apt 07-07 升级）**
+  - `mpc_node_complete` / `wbc_node_complete` 因 `libpinocchio_parsers.so.3.9.0` 缺失直接起不来；4.0 头文件搬到 `include/pinocchio/`（兼容头在 `include/pinocchio/deprecated/`），旧的 `${pinocchio_INCLUDE_DIRS}`/`${pinocchio_LIBRARIES}` 变量用法失效。
+  - `dog2_dynamics` / `dog2_mpc` / `dog2_wbc` 的 CMakeLists 改为链接导入目标 `pinocchio::pinocchio`（带上 deprecated 兼容 include 路径），清理 build/install 后重建通过。
+
+- **导轨位置锁不生效的根因（gz_ros2_control 0.7.20 + Fortress Physics）**
+  1. `initSim` 中，关节只要**暴露** effort 命令接口就会在启动时置上 EFFORT 控制位（无需任何 controller 认领），于是首个 write() 周期就给全部 16 个关节（含 4 个导轨）创建了 `JointForceCmd`(0 N) 组件。
+  2. Fortress `Physics.cc` 每步只把 `JointForceCmd` 数据**清零，不移除组件**；命令分发是 `if (JointForceCmd 存在) SetForce; else if (JointVelocityCmd) ...` —— force 永远优先。
+  3. `rail_position_controller` 激活后导轨进入 POSITION 分支开始写 `JointVelocityCmd`（位置伺服），但陈旧的 `JointForceCmd` 组件让物理端永远忽略它 → 导轨等效 0 N 力控 = 完全自由，落地冲击推到哪就停在哪（老架构漂到 -0.111 m 硬限位同理）。
+  - **修复**：`dog2_ros2_control.xacro` 新增 `dog2_rail_control_joint` 宏，4 个导轨关节改为 **position-only** 命令接口。附带收益：controller 认领前导轨走 `hold_joints` 回退分支（速度钉 0），从物理第一步起就被焊住，spawn 落地不再漂。
+  - **附带发现**：`position_proportional_gain` 实际恒为默认 0.1 —— 插件节点在参数 args 注入前创建，yaml 到不了它；`gz_gain_setter` 运行时改参对 0.7.20 无效（成员在 initSim 缓存、无参数回调），属于安慰剂。伺服本质是速度约束（0.1 × update_rate=1000 → 100/s），刚度够用，未再处理。
+
+- **导轨传动参数加固（两个变体 properties 同步）**
+  - 行走触地冲击沿腿链在导轨轴向的峰值力超过 800 N，5 mm 锁定预算内兜不住（rf 峰值 5.9~7.1 mm）。
+  - `prismatic_effort` 800 → **5000**（位置伺服力上限，等效刚性机械抱闸）；`prismatic_damping` 0.25 → **8.0**、`prismatic_friction` 0.05 → **1.0**（吸收触地脉冲）。
+  - real 变体 xacro 展开回归确认：四条导轨 effort=5000 damping=8.0 friction=1.0。
+
+- **冒烟结果（headless，controller_mode=effort research_stack=true）**
+  - stand：drift 0.015 m（限 0.20）；forward：投影位移 0.902 m（限 ≥0.10）；turn：yaw Δ3.107 rad（限 ≥0.25）。
+  - **max_rail_lock_err = 0.0020 m（限 0.0050）** —— 全程（站立/行走/转向）导轨锁定住了。
+  - `/tmp/dog2_smoke_result.txt`：PASS。
+
+- **遗留与口径**
+  - 步态质量粗糙：forward 阶段横向漂了 ~1 m、机身偏航 -2.1 rad，机身高度在 0.05~0.25 m 间波动，门限内通过但后续要调（MPC/WBC 增益与步态参数）。
+  - 导轨改 position-only 后，任何仍想认领导轨 effort 接口的旧路径（16 通道 effort controller、`include_rail_in_output=True` 的 mux 用法、spider_gazebo_mpc effort 分支）会在 spawner 阶段失败；研究栈不受影响，穿越阶段按设计向 `/rail_position_controller/commands` 流位置目标即可。
+  - 冒烟只跑了一轮，可重复性未验证。
+
 ## 2026-04-19 17:03 xacro 语义收口、side/profile 宏化与最终验收
 
 - **本轮目标**
