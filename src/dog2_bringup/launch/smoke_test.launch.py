@@ -27,8 +27,10 @@ def generate_launch_description() -> LaunchDescription:
         "[r]obot_state_publisher|[g]z_pose_to_odom|[s]im_state_estimator_node[.]py|"
         "[g]ait_scheduler_node[.]py|[m]pc_node_complete|[w]bc_node_complete|"
         "[w]bc_effort_mux|[m]pc_debug_adapter|[w]bc_debug_adapter|"
+        "[r]ail_lock_commander|"
         "[v]isualization_node|[p]arameter_bridge|[i]gn gazebo|[g]z sim|"
-        "[s]pawner_joint_state_broadcaster|[s]pawner_effort_controller"
+        "[s]pawner_joint_state_broadcaster|[s]pawner_effort_controller|"
+        "[s]pawner_rail_position_controller"
     )
     preclean_gazebo = ExecuteProcess(
         cmd=[
@@ -96,6 +98,7 @@ def generate_launch_description() -> LaunchDescription:
         ),
         launch_arguments={
             "controller_mode": LaunchConfiguration("controller_mode"),
+            "model_variant": LaunchConfiguration("model_variant"),
             "research_stack": LaunchConfiguration("research_stack"),
             "use_gui": "false",
             "rviz": "false",
@@ -110,6 +113,7 @@ def generate_launch_description() -> LaunchDescription:
     return LaunchDescription(
         [
             DeclareLaunchArgument("controller_mode", default_value="position"),
+            DeclareLaunchArgument("model_variant", default_value="symmetric", choices=["real", "symmetric"]),
             DeclareLaunchArgument("research_stack", default_value="false"),
             DeclareLaunchArgument("expect_research_stack", default_value="false"),
             DeclareLaunchArgument("exercise_motion", default_value="false"),

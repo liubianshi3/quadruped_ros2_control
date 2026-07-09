@@ -5,7 +5,14 @@ mpc_node_complete:
     dt: 0.05
     control_frequency: 20.0
     mode: hover
-    nominal_body_height: 0.16
+    # Stage-1 stand geometry: everything (height target, stance feet for
+    # the fz split, posture PD target) must describe the SAME pose. With
+    # stance_joint_pose still at the full stance (tibia -1.10) the MPC
+    # split front/hind 61.6/38.4 while the stage-1 pose (tibia -1.40)
+    # physically loads 34.7/65.3 - a permanent nose-up moment that the
+    # attitude support then fought (run22 limit cycle).
+    nominal_body_height: 0.20
+    stance_joint_pose: [0.0, 0.0, 1.05, -1.40]
     default_stance_length: 0.40
     default_stance_width: 0.30
     enable_sliding_constraints: true
@@ -14,28 +21,82 @@ mpc_node_complete:
     crossing_transition_stable_time: 0.15
     slack_linear_weight: 5000.0
     vertical_support_enabled: true
-    vertical_support_target_height: 0.16
-    vertical_support_kp: 350.0
+    # Stage 1 stand target: 0.20 is 3.4 cm above the crouch handoff height
+    # (0.166), so the height loop engages with almost no step. Raising to
+    # the full 0.26 stance is a later, separate tuning step; run21 showed
+    # that asking for 0.26 + stance posture right at handoff turns the
+    # rise into a three-loop fight that bounces at h=0.08-0.15.
+    vertical_support_target_height: 0.20
+    # kp 250 dated from the era when the WBC J^T sign was inverted and most
+    # of the commanded force never became support. With foot_force_sign
+    # fixed (run28) the same gains launched the trunk: 0.2 m of clamped
+    # error commanded 1.5x body weight and the body overshot 0.20 -> 0.33.
+    # 120 gives wn = sqrt(kp/m) ~ 3.2 rad/s, gentle enough for the 20 Hz
+    # loop + odom latency.
+    vertical_support_kp: 120.0
+    # Critical damping for kp=120 on 12 kg is 2*sqrt(kp*m) ~ 76; use 60:
+    # vz from odom is noisy and arrives at 20 Hz, so heavy kd pumps the
+    # loop instead of damping it (run28 rang at fz 48-175 N).
     vertical_support_kd: 60.0
-    vertical_support_min_total_force_multiplier: 1.08
-    vertical_support_max_leg_force: 75.0
+    # 0.6: safety floor for the now-bidirectional height loop -- feet stay
+    # loaded (no slip / no full unload) but ascent can actually decelerate.
+    # 1.0 turned the regulator one-sided: at/above target it output exactly
+    # mg, the trunk coasted upward, unloaded the feet and hopped (run28/29).
+    vertical_support_min_total_force_multiplier: 0.6
+    # In trot only 2 legs carry the body: per-leg demand is ~64 N plus the
+    # attitude-support headroom, so 75 N silently starved the height loop.
+    vertical_support_max_leg_force: 95.0
     vertical_support_height_error_limit: 0.12
-    hover_force_sanitize_enabled: false
-    hover_force_max_leg_fz: 55.0
-    hover_force_min_leg_fz: 18.0
+    hover_force_sanitize_enabled: true
+    # At the crouch the hind pair carries 76% of 117.7 N (~44.7 N/leg,
+    # up to ~57 N at the measured run28 handoff pose). 72 N keeps the
+    # static demand + height-loop increment + attitude delta out of the
+    # clamp: an asymmetrically clamped hind pair leaves an unbalanced
+    # nose-down moment that pumps pitch into the height bounce.
+    hover_force_max_leg_fz: 72.0
+    # 4 N: keep a light preload only. 12 N x 4 = 48 N (~40% weight) kept
+    # pushing at the hop apex and fed energy into the bounce cycle.
+    hover_force_min_leg_fz: 4.0
     attitude_support_enabled: true
+    # Re-enabled after the foot_force_sign fix: run24 turned this off
+    # while the WBC J^T sign was inverted, i.e. every attitude delta was
+    # actively anti-correcting - no conclusion from that A/B survives the
+    # sign fix. With correct force delivery the pitch coupling from the
+    # saturating hind pair needs this authority (scaled 0.35 in HOVER).
+    attitude_support_hover_enabled: true
+    attitude_support_hover_scale: 0.35
     attitude_support_roll_target: 0.0
     attitude_support_pitch_target: 0.0
     attitude_support_roll_kp: 90.0
-    attitude_support_roll_kd: 12.0
+    attitude_support_roll_kd: 20.0
     attitude_support_pitch_kp: 140.0
-    attitude_support_pitch_kd: 18.0
+    attitude_support_pitch_kd: 28.0
     attitude_support_max_leg_delta: 18.0
     crossing_approach_speed: 0.05
     crossing_forward_assist_enabled: false
     crossing_forward_assist_force_per_leg: 14.0
     crossing_forward_assist_pre_approach_enabled: false
     crossing_force_full_support: false
+    # Must stay false: WBC only realizes stance forces on the scheduler's
+    # stance legs, so budgeting the body weight over all 4 legs leaves the
+    # trunk unsupported during trot (2 x 32 N < 118 N weight).
+    flat_force_full_support: false
+    # Replaced by the closed-loop walking planar stabilization below.
+    flat_forward_assist_enabled: false
+    flat_forward_assist_force_per_mps: 300.0
+    flat_forward_assist_max_force_per_leg: 35.0
+    flat_forward_assist_min_cmd: 0.02
+    walking_stabilization_enabled: true
+    # N per (m/s) of body-velocity error, split over stance legs. Sized so a
+    # 0.1 m/s error commands ~20 N of tangential force on a 12 kg robot.
+    # Rebased after foot_force_sign=-1 fix: 200 was tuned against inverted
+    # stance torques and over-corrected lateral/yaw once walking stabilized.
+    walking_vx_kp: 100.0
+    walking_vy_kp: 80.0
+    walking_wz_kp: 12.0
+    walking_fx_max_per_leg: 35.0
+    walking_fy_max_per_leg: 30.0
+    walking_yaw_moment_max: 10.0
     crossing_freeze_rail_targets: false
     bfs_rail_ramp_enabled: true
     bfs_rail_ramp_rate: 0.015

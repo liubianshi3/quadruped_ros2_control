@@ -32,6 +32,8 @@ setup(
             "crossing_check = dog2_bringup.crossing_check:main",
             "crossing_trigger = dog2_bringup.crossing_trigger:main",
             "mpc_debug_adapter = dog2_bringup.mpc_debug_adapter:main",
+            "rail_lock_commander = dog2_bringup.rail_lock_commander:main",
+            "robot_description_server = dog2_bringup.robot_description_server:main",
             "smoke_check = dog2_bringup.smoke_check:main",
             "wbc_effort_mux = dog2_bringup.wbc_effort_mux:main",
             "wbc_debug_adapter = dog2_bringup.wbc_debug_adapter:main",

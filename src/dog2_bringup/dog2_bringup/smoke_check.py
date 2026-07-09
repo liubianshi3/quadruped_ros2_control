@@ -16,7 +16,10 @@ from dog2_interfaces.msg import ContactPhase, MPCDebug, RobotState, WBCDebug
 from geometry_msgs.msg import Twist
 from nav_msgs.msg import Odometry
 from rclpy.node import Node
+from sensor_msgs.msg import JointState
 from std_msgs.msg import Float64MultiArray
+
+_RAIL_JOINT_NAMES = ("lf_rail_joint", "lh_rail_joint", "rh_rail_joint", "rf_rail_joint")
 
 
 @dataclass
@@ -84,7 +87,10 @@ class SmokeCheckNode(Node):
                 "joint_state_broadcaster",
             ],
         )
-        self.declare_parameter("required_research_controllers", ["effort_controller"])
+        self.declare_parameter(
+            "required_research_controllers",
+            ["effort_controller", "rail_position_controller"],
+        )
         self.declare_parameter("expect_research_stack", False)
         self.declare_parameter("exercise_motion", False)
         self.declare_parameter("controller_manager_service", "/controller_manager/list_controllers")
@@ -125,6 +131,10 @@ class SmokeCheckNode(Node):
         self.declare_parameter("flat_swing_clearance_min_m", 0.015)
         self.declare_parameter("flat_stance_slip_max_mps", 0.06)
         self.declare_parameter("flat_valid_duration_sec", 3.0)
+        # Rails must stay locked while the research stack walks. Drift is
+        # measured against the first /joint_states sample of each rail joint.
+        self.declare_parameter("max_rail_drift_m", 0.005)
+        self.declare_parameter("enforce_rail_drift", True)
         self.declare_parameter("result_file", "")
 
         self._required_topics = self._as_string_set("required_topics")
@@ -162,6 +172,8 @@ class SmokeCheckNode(Node):
         self._flat_swing_clearance_min_m = float(self.get_parameter("flat_swing_clearance_min_m").value)
         self._flat_stance_slip_max_mps = float(self.get_parameter("flat_stance_slip_max_mps").value)
         self._flat_valid_duration_sec = float(self.get_parameter("flat_valid_duration_sec").value)
+        self._max_rail_drift_m = float(self.get_parameter("max_rail_drift_m").value)
+        self._enforce_rail_drift = bool(self.get_parameter("enforce_rail_drift").value)
         self._result_file = str(self.get_parameter("result_file").value)
         self._cmd_vel_topic = str(self.get_parameter("cmd_vel_topic").value)
         self._odom_topic = str(self.get_parameter("odom_topic").value)
@@ -201,6 +213,15 @@ class SmokeCheckNode(Node):
             ListControllers,
             str(self.get_parameter("controller_manager_service").value),
         )
+
+        # Rail lock error is judged against the lock target (0.0 for every
+        # rail). The stand stage acts as a settle window: startup impacts can
+        # displace the rails before rail_position_controller activates, and
+        # the servo needs a moment to pull them back, so enforcement only
+        # covers the forward/turn stages.
+        self._rail_lock_err_max = 0.0
+        self._rail_lock_err_worst_joint = ""
+        self._rail_lock_err_current = 0.0
 
         self._last_odom: Optional[Odometry] = None
         self._last_odom_sec: Optional[float] = None
@@ -244,6 +265,7 @@ class SmokeCheckNode(Node):
             self._on_effort_command,
             20,
         )
+        self.create_subscription(JointState, "/joint_states", self._on_joint_state, 20)
         self._cmd_pub = self.create_publisher(Twist, self._cmd_vel_topic, 10)
 
         self.create_timer(self._poll_period_sec, self._poll)
@@ -292,6 +314,28 @@ class SmokeCheckNode(Node):
 
     def _on_effort_command(self, _msg: Float64MultiArray) -> None:
         self._last_effort_command_sec = self._now_sec()
+
+    def _on_joint_state(self, msg: JointState) -> None:
+        count = min(len(msg.name), len(msg.position))
+        worst_err = 0.0
+        worst_joint = ""
+        seen = False
+        for i in range(count):
+            name = msg.name[i]
+            if name not in _RAIL_JOINT_NAMES:
+                continue
+            seen = True
+            err = abs(float(msg.position[i]))
+            if err > worst_err:
+                worst_err = err
+                worst_joint = name
+        if not seen:
+            return
+        self._rail_lock_err_current = worst_err
+        track_stage = self._stage in ("forward", "turn")
+        if track_stage and worst_err > self._rail_lock_err_max:
+            self._rail_lock_err_max = worst_err
+            self._rail_lock_err_worst_joint = worst_joint
 
     def _current_pose(self) -> Optional[_PlanarPose]:
         if self._last_odom is None:
@@ -401,6 +445,19 @@ class SmokeCheckNode(Node):
         if self._expect_research_stack and self._last_wbc_debug is not None and not self._last_wbc_debug.success:
             self._fail(f"WBC reported failure: {self._last_wbc_debug.status_message}")
 
+    def _check_rail_drift(self) -> None:
+        if not (self._expect_research_stack and self._enforce_rail_drift):
+            return
+        if self._rail_lock_err_max > self._max_rail_drift_m:
+            self._fail(
+                "Rail lock error %.4f m on %s exceeds limit %.4f m."
+                % (
+                    self._rail_lock_err_max,
+                    self._rail_lock_err_worst_joint,
+                    self._max_rail_drift_m,
+                )
+            )
+
     def _complete_stand(self) -> None:
         if self._stage_start_pose is None:
             self._fail("Stand stage missing start pose.")
@@ -431,6 +488,17 @@ class SmokeCheckNode(Node):
                 "but continuing because enforce_stand_drift=false."
                 % (drift, self._stand_max_xy_drift_m)
             )
+        if (
+            self._expect_research_stack
+            and self._enforce_rail_drift
+            and self._rail_lock_err_current > self._max_rail_drift_m
+        ):
+            self._fail(
+                "Rails not settled at lock target after stand stage: "
+                "current max |rail|=%.4f m (limit %.4f m)."
+                % (self._rail_lock_err_current, self._max_rail_drift_m)
+            )
+            return
         self.get_logger().info("Stand stage passed: drift=%.3f m z=%.3f m" % (drift, pose.z))
         self._begin_stage("forward")
 
@@ -498,12 +566,17 @@ class SmokeCheckNode(Node):
             return
 
         self._require_wbc_success()
+        self._check_rail_drift()
         self._publish_stop()
         self.get_logger().info("Turn stage passed: yaw_delta=%.3f rad z=%.3f m" % (yaw_delta, pose.z))
-        self.get_logger().info("Dog2 smoke check passed with stand -> forward -> turning motion.")
+        self.get_logger().info(
+            "Dog2 smoke check passed with stand -> forward -> turning motion. "
+            "max_rail_lock_err=%.4f m" % self._rail_lock_err_max
+        )
         self._write_result(
             "PASS",
-            "turn_yaw_delta=%.3f z=%.3f" % (yaw_delta, pose.z),
+            "turn_yaw_delta=%.3f z=%.3f max_rail_lock_err=%.4f"
+            % (yaw_delta, pose.z, self._rail_lock_err_max),
         )
         raise SystemExit(0)
 
@@ -639,7 +712,7 @@ class SmokeCheckNode(Node):
         missing_streams = sorted(self._missing_streams())
 
         if missing_topics or missing_nodes or missing_controllers or missing_streams:
-            if self._exercise_motion and self._stage != "wait_ready":
+            if self._exercise_motion and self._stage not in ("wait_ready", "wait_settle"):
                 self._fail(
                     "Smoke motion lost runtime dependencies. missing_topics=%s missing_nodes=%s "
                     "missing_controllers=%s missing_streams=%s"
@@ -691,10 +764,67 @@ class SmokeCheckNode(Node):
             raise SystemExit(0)
 
         if self._stage == "wait_ready":
-            self._begin_stage("stand")
+            # Topics/controllers being up does not mean the robot is quiet:
+            # the effort mux runs a stand-up PD for several seconds after the
+            # effort controller activates. Sampling the stand start pose
+            # mid-stand-up records the lurch as "stand drift", so wait for
+            # actual quiescence (height in band, planar speed low) first.
+            self._stage = "wait_settle"
+            self._settle_started_at = self._now_sec()
+            self._settle_quiet_since: Optional[float] = None
+            self._settle_last_pose: Optional[_PlanarPose] = None
+            self._settle_last_pose_at: Optional[float] = None
+            return
+
+        if self._stage == "wait_settle":
+            now = self._now_sec()
+            # The effort mux runs its stand-up hold + ramp for ~8 s after the
+            # effort controller subscribes; quiescence measured inside that
+            # window is the PD hold, not the final WBC stack. Only start
+            # counting quiet time after the handoff is over.
+            min_elapsed_sec = 10.0
+            pose = self._current_pose()
+            if pose is not None and now - self._settle_started_at >= min_elapsed_sec:
+                quiet = False
+                if self._settle_last_pose is not None and self._settle_last_pose_at is not None:
+                    dt = max(1e-3, now - self._settle_last_pose_at)
+                    speed = math.hypot(
+                        pose.x - self._settle_last_pose.x,
+                        pose.y - self._settle_last_pose.y,
+                    ) / dt
+                    dz_rate = abs(pose.z - self._settle_last_pose.z) / dt
+                    quiet = (
+                        self._body_height_ok(pose)
+                        and speed < 0.08
+                        and dz_rate < 0.05
+                    )
+                self._settle_last_pose = pose
+                self._settle_last_pose_at = now
+                if quiet:
+                    if self._settle_quiet_since is None:
+                        self._settle_quiet_since = now
+                    if now - self._settle_quiet_since >= 2.0:
+                        self.get_logger().info(
+                            "Robot settled after startup (%.1f s); starting stand stage."
+                            % (now - self._settle_started_at)
+                        )
+                        self._begin_stage("stand")
+                        return
+                else:
+                    self._settle_quiet_since = None
+            elif pose is not None:
+                self._settle_last_pose = pose
+                self._settle_last_pose_at = now
+
+            if now - self._settle_started_at > 40.0:
+                self._fail(
+                    "Robot never settled after startup (40 s): still moving or "
+                    "body height out of band."
+                )
             return
 
         self._publish_stage_command()
+        self._check_rail_drift()
         if self._stage_started_at is None:
             self._fail("Smoke motion stage started without a start timestamp.")
             return

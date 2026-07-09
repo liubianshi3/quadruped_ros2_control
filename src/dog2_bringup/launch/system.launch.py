@@ -13,6 +13,7 @@ def generate_launch_description() -> LaunchDescription:
     return LaunchDescription(
         [
             DeclareLaunchArgument("controller_mode", default_value="position"),
+            DeclareLaunchArgument("model_variant", default_value="symmetric", choices=["real", "symmetric"]),
             DeclareLaunchArgument(
                 "config_file",
                 default_value=PathJoinSubstitution(
@@ -60,6 +61,9 @@ def generate_launch_description() -> LaunchDescription:
             DeclareLaunchArgument("rail_hold_enabled", default_value="false"),
             DeclareLaunchArgument("rail_hold_hover_enabled", default_value="false"),
             DeclareLaunchArgument("rail_hold_crossing_staging_enabled", default_value="false"),
+            # See control_stack.launch.py: MPC fz is the upward ground
+            # reaction, so the WBC J^T term needs -1.0 for tau = g - J^T f.
+            DeclareLaunchArgument("wbc_foot_force_sign", default_value="-1.0"),
             DeclareLaunchArgument("freeze_rail_effort_in_hover", default_value="false"),
             DeclareLaunchArgument("freeze_rail_effort_in_crossing_staging", default_value="false"),
             IncludeLaunchDescription(
@@ -68,6 +72,7 @@ def generate_launch_description() -> LaunchDescription:
                 ),
                 launch_arguments={
                     "controller_mode": LaunchConfiguration("controller_mode"),
+                    "model_variant": LaunchConfiguration("model_variant"),
                     "config_file": LaunchConfiguration("config_file"),
                     "mass_scale": LaunchConfiguration("mass_scale"),
                     "p_gain": LaunchConfiguration("p_gain"),
@@ -95,6 +100,7 @@ def generate_launch_description() -> LaunchDescription:
                 ),
                 launch_arguments={
                     "use_sim_time": LaunchConfiguration("use_sim_time"),
+                    "model_variant": LaunchConfiguration("model_variant"),
                     "research_stack": LaunchConfiguration("research_stack"),
                     "controller_mode": LaunchConfiguration("controller_mode"),
                     "crossing_window_x_position": LaunchConfiguration("crossing_window_x_position"),
@@ -110,6 +116,7 @@ def generate_launch_description() -> LaunchDescription:
                     "rail_hold_enabled": LaunchConfiguration("rail_hold_enabled"),
                     "rail_hold_hover_enabled": LaunchConfiguration("rail_hold_hover_enabled"),
                     "rail_hold_crossing_staging_enabled": LaunchConfiguration("rail_hold_crossing_staging_enabled"),
+                    "wbc_foot_force_sign": LaunchConfiguration("wbc_foot_force_sign"),
                     "freeze_rail_effort_in_hover": LaunchConfiguration("freeze_rail_effort_in_hover"),
                     "freeze_rail_effort_in_crossing_staging": LaunchConfiguration("freeze_rail_effort_in_crossing_staging"),
                 }.items(),

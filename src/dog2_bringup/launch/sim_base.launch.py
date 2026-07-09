@@ -21,6 +21,7 @@ def generate_launch_description() -> LaunchDescription:
         ),
         launch_arguments={
             "config_file": LaunchConfiguration("config_file"),
+            "model_variant": LaunchConfiguration("model_variant"),
             "mass_scale": LaunchConfiguration("mass_scale"),
             "p_gain": LaunchConfiguration("p_gain"),
             "use_gui": LaunchConfiguration("use_gui"),
@@ -50,6 +51,7 @@ def generate_launch_description() -> LaunchDescription:
         ),
         launch_arguments={
             "config_file": LaunchConfiguration("config_file"),
+            "model_variant": LaunchConfiguration("model_variant"),
             "mass_scale": LaunchConfiguration("mass_scale"),
             "p_gain": LaunchConfiguration("p_gain"),
             "use_gui": LaunchConfiguration("use_gui"),
@@ -86,6 +88,7 @@ def generate_launch_description() -> LaunchDescription:
         ),
         launch_arguments={
             "config_file": LaunchConfiguration("config_file"),
+            "model_variant": LaunchConfiguration("model_variant"),
             "mass_scale": LaunchConfiguration("mass_scale"),
             "p_gain": LaunchConfiguration("p_gain"),
             "use_gui": LaunchConfiguration("use_gui"),
@@ -178,6 +181,7 @@ def generate_launch_description() -> LaunchDescription:
     return LaunchDescription(
         [
             DeclareLaunchArgument("controller_mode", default_value="position"),
+            DeclareLaunchArgument("model_variant", default_value="symmetric", choices=["real", "symmetric"]),
             DeclareLaunchArgument("config_file", default_value=gait_config_default),
             DeclareLaunchArgument("mass_scale", default_value="1.0"),
             DeclareLaunchArgument("p_gain", default_value="1.5"),
