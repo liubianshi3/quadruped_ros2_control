@@ -224,6 +224,13 @@ private:
         this->declare_parameter("vertical_support_min_total_force_multiplier", 1.20);
         this->declare_parameter("vertical_support_max_leg_force", 100.0);
         this->declare_parameter("vertical_support_height_error_limit", 0.25);
+        // Max UPWARD per-leg fz rate (N/s) in flat modes; 0 disables.
+        this->declare_parameter("vertical_support_load_rate", 500.0);
+        // Scheduled-stance feet whose FK world-z lever rides more than this
+        // above the lowest foot are treated as airborne (no support force).
+        // Must exceed the trot-rock lever spread (~8 cm at 0.3 rad tilt);
+        // 0 disables.
+        this->declare_parameter("support_foot_height_gate", 0.12);
         this->declare_parameter("hover_force_sanitize_enabled", true);
         this->declare_parameter("hover_force_max_leg_fz", 55.0);
         this->declare_parameter("hover_force_min_leg_fz", 18.0);
@@ -256,6 +263,16 @@ private:
         this->declare_parameter("walking_fx_max_per_leg", 30.0);
         this->declare_parameter("walking_fy_max_per_leg", 25.0);
         this->declare_parameter("walking_yaw_moment_max", 8.0);
+        // Roll/pitch rate damping via common-mode tangential forces
+        // (N*m per rad/s, converted through the COM-to-foot height).
+        // Default OFF: the odom angular rate is a 20 Hz finite difference
+        // that spikes at every touchdown, so this term saturates its clamp
+        // in a noise-driven direction each step (run41/42: +-20/30 N
+        // common-mode shoves flipped the trunk within the first stride).
+        // Only useful with a clean rate source (IMU) + low-pass.
+        this->declare_parameter("walking_rate_damping", 0.0);
+        this->declare_parameter("walking_rate_force_max", 20.0);
+        this->declare_parameter("walking_vel_filter_tau", 0.35);
         this->declare_parameter("crossing_freeze_rail_targets", false);
         this->declare_parameter("bfs_rail_ramp_enabled", true);
         this->declare_parameter("bfs_rail_ramp_rate", 0.015);
@@ -610,17 +627,35 @@ private:
     }
 
     void cmdVelCallback(const geometry_msgs::msg::Twist::SharedPtr msg) {
-        velocity_cmd_(0) = msg->linear.x;
-        velocity_cmd_(1) = msg->linear.y;
-        velocity_cmd_(2) = msg->angular.z;
-        
+        velocity_cmd_target_(0) = msg->linear.x;
+        velocity_cmd_target_(1) = msg->linear.y;
+        velocity_cmd_target_(2) = msg->angular.z;
+
         // 如果收到速度命令，切换到行走模式
-        if (velocity_cmd_.norm() > 0.01 && 
+        if (velocity_cmd_target_.norm() > 0.01 &&
             current_mode_ == TrajectoryGenerator::Mode::HOVER) {
             current_mode_ = TrajectoryGenerator::Mode::WALKING;
             trajectory_generator_->setMode(current_mode_);
             RCLCPP_INFO(this->get_logger(), "Switched to WALKING mode");
         }
+    }
+
+    // Slew-limit the velocity command actually served to the trajectory
+    // generator and the planar velocity loop. A step to 0.12 m/s at walk
+    // onset demands full tracking force on the very first trot pair while
+    // the trunk is still settling into the gait; ramping over ~0.5 s lets
+    // the robot start stepping in place and accelerate smoothly.
+    void slewVelocityCommand() {
+        auto slew = [this](double current, double target, double rate) {
+            const double max_step = rate * dt_;
+            return current + clampDouble(target - current, -max_step, max_step);
+        };
+        velocity_cmd_(0) =
+            slew(velocity_cmd_(0), velocity_cmd_target_(0), cmd_linear_slew_rate_);
+        velocity_cmd_(1) =
+            slew(velocity_cmd_(1), velocity_cmd_target_(1), cmd_linear_slew_rate_);
+        velocity_cmd_(2) =
+            slew(velocity_cmd_(2), velocity_cmd_target_(2), cmd_angular_slew_rate_);
     }
 
     bool hasCrossingState() const {
@@ -676,6 +711,7 @@ private:
             this->get_parameter("slack_linear_weight").as_double());
         refreshVerticalSupportParameters();
         updateSupportGeometry();
+        slewVelocityCommand();
         
         // 构建16维扩展状态
         Eigen::VectorXd extended_state(16);
@@ -890,6 +926,10 @@ private:
             std::max(0.0, this->get_parameter("vertical_support_max_leg_force").as_double());
         vertical_support_height_error_limit_ =
             std::max(0.0, this->get_parameter("vertical_support_height_error_limit").as_double());
+        vertical_support_load_rate_ =
+            std::max(0.0, this->get_parameter("vertical_support_load_rate").as_double());
+        support_foot_height_gate_ =
+            std::max(0.0, this->get_parameter("support_foot_height_gate").as_double());
         hover_force_sanitize_enabled_ =
             this->get_parameter("hover_force_sanitize_enabled").as_bool();
         hover_force_max_leg_fz_ =
@@ -952,6 +992,12 @@ private:
             std::max(0.0, this->get_parameter("walking_fy_max_per_leg").as_double());
         walking_yaw_moment_max_ =
             std::max(0.0, this->get_parameter("walking_yaw_moment_max").as_double());
+        walking_rate_damping_ =
+            std::max(0.0, this->get_parameter("walking_rate_damping").as_double());
+        walking_rate_force_max_ =
+            std::max(0.0, this->get_parameter("walking_rate_force_max").as_double());
+        walking_vel_filter_tau_ =
+            std::max(0.0, this->get_parameter("walking_vel_filter_tau").as_double());
         crossing_freeze_rail_targets_ =
             this->get_parameter("crossing_freeze_rail_targets").as_bool();
         bfs_rail_ramp_enabled_ =
@@ -1002,6 +1048,7 @@ private:
         }
 
         support_geometry_from_fk_ = false;
+        support_foot_airborne_.fill(false);
         if (dog2_model_ && runtime_fk_ready_ &&
             joint_received_ && measured_leg_configs_valid_) {
             Eigen::VectorXd q = Eigen::VectorXd::Zero(dog2_model_->nq());
@@ -1019,6 +1066,26 @@ private:
                     (R_wb * (foot_b - com_b)).transpose();
             }
             support_geometry_from_fk_ = true;
+
+            // Physical contact gate for the clock-driven schedule: feet on
+            // the ground share one world plane, so their COM-relative
+            // world z levers are equal regardless of body tilt. A
+            // scheduled-stance foot riding well above the lowest foot is
+            // physically airborne (late touchdown, tip recovery, splayed
+            // leg) and must not be budgeted support force: loading it is
+            // a free-fall on that corner (run56 turn entry: fz=[67,67,0,0]
+            // with one foot 0.6 m out -> roll flip).
+            if (support_foot_height_gate_ > 0.0) {
+                double lowest = support_lever_arms_(0, 2);
+                for (int i = 1; i < 4; ++i) {
+                    lowest = std::min(lowest, support_lever_arms_(i, 2));
+                }
+                for (int i = 0; i < 4; ++i) {
+                    support_foot_airborne_[i] =
+                        (support_lever_arms_(i, 2) - lowest) >
+                        support_foot_height_gate_;
+                }
+            }
         } else {
             for (int i = 0; i < 4; ++i) {
                 const Eigen::Vector3d d_b =
@@ -1222,6 +1289,24 @@ private:
                 }
                 contact_state = contact_detector_->detectFromGait(gait_phases);
             }
+
+            // Schedule AND measured reality: drop scheduled-stance feet the
+            // FK height gate says are airborne, unless that would leave
+            // fewer than two supports.
+            if (support_geometry_from_fk_) {
+                int gated_count = 0;
+                for (int i = 0; i < 4; ++i) {
+                    if (contact_state.in_contact[i] && !support_foot_airborne_[i]) {
+                        ++gated_count;
+                    }
+                }
+                if (gated_count >= 2) {
+                    for (int i = 0; i < 4; ++i) {
+                        contact_state.in_contact[i] =
+                            contact_state.in_contact[i] && !support_foot_airborne_[i];
+                    }
+                }
+            }
         }
 
         if (crossing_force_full_support_ &&
@@ -1276,7 +1361,7 @@ private:
     void applyVerticalSupport(Eigen::VectorXd& foot_forces,
                               const ContactDetector::ContactState& contact_state,
                               bool use_contact_mask,
-                              bool crossing_pre_approach) const {
+                              bool crossing_pre_approach) {
         if (!vertical_support_enabled_ ||
             foot_forces.size() < 12 ||
             current_srbd_state_.size() < 12) {
@@ -1342,7 +1427,46 @@ private:
         // (measured FK, world axes), so the balance stays correct in a deep
         // crouch and under body tilt, not just at the nominal stance.
         std::array<double, 4> fz_dist{};
-        {
+        if (support_count == 2) {
+            // Trot pair: two feet cannot zero both planar moments unless the
+            // COM sits exactly on the support line, so the exact 3-multiplier
+            // KKT below turns near-singular (det ~1e-6) and its clamped
+            // "solution" loads one foot to the ceiling and unloads the other
+            // completely (run39 walking: fz=[77, 0] against a 118 N demand,
+            // a 1.25 Hz corner-drop that careened the trunk and somersaulted
+            // the turn stage). Split the total along the single feasible
+            // degree of freedom instead: w minimizes the squared planar
+            // moment |w*d1 + (1-w)*d2|^2; the irreducible residual is left
+            // to the attitude trim.
+            const double total =
+                std::min(target_total_force,
+                         vertical_force_ceiling * support_count);
+            int legs[2] = {-1, -1};
+            int k = 0;
+            for (int i = 0; i < 4; ++i) {
+                if (support_legs[i] && k < 2) {
+                    legs[k++] = i;
+                }
+            }
+            const double dx1 = support_lever_arms_(legs[0], 0);
+            const double dy1 = support_lever_arms_(legs[0], 1);
+            const double dx2 = support_lever_arms_(legs[1], 0);
+            const double dy2 = support_lever_arms_(legs[1], 1);
+            const double ex = dx1 - dx2;
+            const double ey = dy1 - dy2;
+            const double denom = ex * ex + ey * ey;
+            double w = 0.5;
+            if (denom > 1e-8) {
+                w = -(dx2 * ex + dy2 * ey) / denom;
+            }
+            // Keep both feet meaningfully loaded: a fully unloaded stance
+            // foot loses traction authority and re-rings the contact.
+            w = clampDouble(w, 0.15, 0.85);
+            fz_dist[legs[0]] =
+                clampDouble(total * w, 0.0, vertical_force_ceiling);
+            fz_dist[legs[1]] =
+                clampDouble(total * (1.0 - w), 0.0, vertical_force_ceiling);
+        } else {
             const double total =
                 std::min(target_total_force,
                          vertical_force_ceiling * support_count);
@@ -1421,6 +1545,52 @@ private:
             } else {
                 foot_forces(z_index) = std::max(foot_forces(z_index), per_leg_force);
             }
+        }
+
+        // Asymmetric per-leg load-rate limit (final shaping step). At every
+        // trot pair transition the static split re-targets instantly
+        // (e.g. a fresh diagonal jumps 0 -> ~47 N while the outgoing pair
+        // drops 26 N), which hammers the contacts and re-excites the tip
+        // every 0.3 s. Limit only the UPWARD rate: a newly landed foot is
+        // loaded over ~100-150 ms (spanning the duty overlap), while
+        // unloading stays instant because the leg physically leaves the
+        // ground anyway. The transient total shortfall (~1-2 mm of sink)
+        // is the price of compliant load transfer.
+        if (vertical_support_load_rate_ > 0.0 &&
+            (current_mode_ == TrajectoryGenerator::Mode::WALKING ||
+             current_mode_ == TrajectoryGenerator::Mode::HOVER)) {
+            const double max_step = vertical_support_load_rate_ * dt_;
+            for (int i = 0; i < 4; ++i) {
+                if (!support_legs[i]) {
+                    vertical_support_last_fz_(i) = 0.0;
+                    continue;
+                }
+                fz_dist[i] = std::min(
+                    fz_dist[i], vertical_support_last_fz_(i) + max_step);
+                vertical_support_last_fz_(i) = fz_dist[i];
+                const int z_index = i * 3 + 2;
+                foot_forces(z_index) = fz_dist[i];
+            }
+        }
+
+        if (current_mode_ == TrajectoryGenerator::Mode::WALKING) {
+            // applyVerticalSupport is const; use a local steady clock for
+            // throttling instead of the node clock.
+            static rclcpp::Clock steady_clock(RCL_STEADY_TIME);
+            RCLCPP_INFO_THROTTLE(
+                this->get_logger(), steady_clock, 200,
+                "[vsplit] n=%d legs=[%d%d%d%d] fz=[%.1f %.1f %.1f %.1f] "
+                "total=%.1f h_err=%.3f lever_x=[%.2f %.2f %.2f %.2f] "
+                "lever_y=[%.2f %.2f %.2f %.2f] src=%s",
+                support_count,
+                support_legs[0], support_legs[1], support_legs[2], support_legs[3],
+                fz_dist[0], fz_dist[1], fz_dist[2], fz_dist[3],
+                target_total_force, height_error,
+                support_lever_arms_(0, 0), support_lever_arms_(1, 0),
+                support_lever_arms_(2, 0), support_lever_arms_(3, 0),
+                support_lever_arms_(0, 1), support_lever_arms_(1, 1),
+                support_lever_arms_(2, 1), support_lever_arms_(3, 1),
+                support_geometry_from_fk_ ? "fk" : "stance");
         }
     }
 
@@ -1732,6 +1902,18 @@ private:
             return;
         }
 
+        // Tangential forces act ~0.2 m below the COM, so every newton of
+        // velocity-tracking fx/fy is also ~0.2 N*m of pitch/roll moment --
+        // far more than the fz attitude trim can counter (run49: a -70 N
+        // braking fx = -14 N*m pitch vs ~6 N*m of trim authority, a
+        // positive-feedback tip). Fade the planar loop out as tilt grows.
+        // Thresholds sit ABOVE the routine trot oscillation (~0.1-0.3 rad):
+        // fading from 0.10 rad choked the only forward actuator and the
+        // robot stepped in place (run51 projected 0.000 m). 0.25-0.45 only
+        // strips the velocity loop during genuine tip emergencies.
+        const double tilt_fade = clampDouble(
+            1.0 - (level_err.tilt - 0.25) / (0.45 - 0.25), 0.0, 1.0);
+
         std::array<bool, 4> support_legs{};
         int support_count = 0;
         for (int i = 0; i < 4; ++i) {
@@ -1754,30 +1936,67 @@ private:
         const double sy = std::sin(yaw);
         const double vx_world = current_srbd_state_(6);
         const double vy_world = current_srbd_state_(7);
-        const double vx_body = cy * vx_world + sy * vy_world;
-        const double vy_body = -sy * vx_world + cy * vy_world;
+        const double vx_raw = cy * vx_world + sy * vy_world;
+        const double vy_raw = -sy * vx_world + cy * vy_world;
 
-        const double fx_total = clampDouble(
+        // Track the MEAN velocity, not the trot rock. The odom velocity is
+        // measured at base_link, so the residual pitch/roll limit cycle
+        // shows up as vx = h*wy ~ +-0.12 m/s at gait frequency with ZERO
+        // net COM motion (run57: vx oscillating -0.12..+0.12, fx flapping
+        // 25 N each way, net displacement 0). A ~0.35 s low-pass knocks the
+        // ~1.6 Hz rock down 5x while barely delaying command tracking.
+        {
+            const double alpha =
+                dt_ / (std::max(1e-3, walking_vel_filter_tau_) + dt_);
+            vx_body_filt_ += alpha * (vx_raw - vx_body_filt_);
+            vy_body_filt_ += alpha * (vy_raw - vy_body_filt_);
+            wz_filt_ += alpha * (current_srbd_state_(11) - wz_filt_);
+        }
+        const double vx_body = vx_body_filt_;
+        const double vy_body = vy_body_filt_;
+
+        const double fx_total = tilt_fade * clampDouble(
             walking_vx_kp_ * (velocity_cmd_(0) - vx_body),
             -walking_fx_max_per_leg_ * support_count,
             walking_fx_max_per_leg_ * support_count);
-        const double fy_total = clampDouble(
+        const double fy_total = tilt_fade * clampDouble(
             walking_vy_kp_ * (velocity_cmd_(1) - vy_body),
             -walking_fy_max_per_leg_ * support_count,
             walking_fy_max_per_leg_ * support_count);
 
-        const double wz = current_srbd_state_(11);
-        const double yaw_moment = clampDouble(
+        const double wz = wz_filt_;
+        const double yaw_moment = tilt_fade * clampDouble(
             walking_wz_kp_ * (velocity_cmd_(2) - wz),
             -walking_yaw_moment_max_,
             walking_yaw_moment_max_);
 
         double denom_y = 1e-6;
+        double lever_h = 0.0;
         for (int i = 0; i < 4; ++i) {
             if (support_legs[i]) {
                 denom_y += support_lever_arms_(i, 1) * support_lever_arms_(i, 1);
+                lever_h += -support_lever_arms_(i, 2);
             }
         }
+        lever_h = std::max(0.05, lever_h / static_cast<double>(support_count));
+
+        // Roll/pitch RATE damping through tangential forces. The vertical
+        // channel is owned by the height loop + static split, and the fz
+        // attitude trim has zero authority about the line joining a trot
+        // pair -- but the stance feet sit ~0.2 m below the COM, so common-
+        // mode fx/fy do create horizontal-axis moments (M = r x f with
+        // r_z = -h: Mx = h*sum(fy), My = -h*sum(fx)). Damp the world-frame
+        // angular rates with them; pure damping only removes rotational
+        // energy, so a sign-safe way to arrest the diagonal tip that the
+        // duty-overlap windows then reset.
+        const double wx = current_srbd_state_(9);
+        const double wy = current_srbd_state_(10);
+        const double fx_rate_total = clampDouble(
+            walking_rate_damping_ * wy / lever_h,
+            -walking_rate_force_max_, walking_rate_force_max_);
+        const double fy_rate_total = clampDouble(
+            -walking_rate_damping_ * wx / lever_h,
+            -walking_rate_force_max_, walking_rate_force_max_);
 
         // fx/fy_total are BODY-frame corrections (from body-frame velocity
         // errors) but foot_forces is a WORLD-frame vector (the WBC rotates
@@ -1790,8 +2009,10 @@ private:
         // levers and world fx, so it stays as is.
         const double fx_share_b = fx_total / support_count;
         const double fy_share_b = fy_total / support_count;
-        const double fx_share_w = cy * fx_share_b - sy * fy_share_b;
-        const double fy_share_w = sy * fx_share_b + cy * fy_share_b;
+        const double fx_share_w =
+            cy * fx_share_b - sy * fy_share_b + fx_rate_total / support_count;
+        const double fy_share_w =
+            sy * fx_share_b + cy * fy_share_b + fy_rate_total / support_count;
         for (int i = 0; i < 4; ++i) {
             if (!support_legs[i]) {
                 continue;
@@ -1801,11 +2022,16 @@ private:
             // Mz = sum(-y_i * fx_i): +Mz needs +fx on the left (y<0) feet.
             const double dfx_yaw =
                 -yaw_moment * support_lever_arms_(i, 1) / denom_y;
+            // The planar loop OWNS the stance tangentials (mirror of the fz
+            // ownership above): the QP's fx/fy were solved jointly with a
+            // fz plan we discard, so during transients they are large,
+            // inconsistent shoves (run44 with the loop disabled: lone QP
+            // fx=+31 N = +6 N*m of pitch, twice the static tip moment).
             foot_forces(x_index) = clampDouble(
-                foot_forces(x_index) + fx_share_w + dfx_yaw,
+                fx_share_w + dfx_yaw,
                 -walking_fx_max_per_leg_, walking_fx_max_per_leg_);
             foot_forces(y_index) = clampDouble(
-                foot_forces(y_index) + fy_share_w,
+                fy_share_w,
                 -walking_fy_max_per_leg_, walking_fy_max_per_leg_);
         }
 
@@ -1813,12 +2039,14 @@ private:
             this->get_logger(),
             *this->get_clock(),
             500,
-            "[walk_stab] vx=%.3f/%.3f vy=%.3f/%.3f wz=%.3f/%.3f yaw=%.2f fx=%.1f fy=%.1f mz=%.2f n=%d",
+            "[walk_stab] vx=%.3f/%.3f vy=%.3f/%.3f wz=%.3f/%.3f yaw=%.2f xy=[%.3f %.3f] fx=%.1f fy=%.1f mz=%.2f rate_fx=%.1f rate_fy=%.1f n=%d",
             vx_body, velocity_cmd_(0),
             vy_body, velocity_cmd_(1),
             wz, velocity_cmd_(2),
             yaw,
-            fx_total, fy_total, yaw_moment, support_count);
+            current_srbd_state_(0), current_srbd_state_(1),
+            fx_total, fy_total, yaw_moment,
+            fx_rate_total, fy_rate_total, support_count);
     }
 
     void publishFootForces(const Eigen::VectorXd& foot_forces) {
@@ -1966,6 +2194,10 @@ private:
     double vertical_support_min_total_force_multiplier_;
     double vertical_support_max_leg_force_;
     double vertical_support_height_error_limit_;
+    double vertical_support_load_rate_ = 500.0;
+    Eigen::Vector4d vertical_support_last_fz_ = Eigen::Vector4d::Zero();
+    double support_foot_height_gate_ = 0.12;
+    std::array<bool, 4> support_foot_airborne_{};
     bool hover_force_sanitize_enabled_ = true;
     double hover_force_max_leg_fz_ = 55.0;
     double hover_force_min_leg_fz_ = 18.0;
@@ -1995,6 +2227,12 @@ private:
     double walking_fx_max_per_leg_ = 30.0;
     double walking_fy_max_per_leg_ = 25.0;
     double walking_yaw_moment_max_ = 8.0;
+    double walking_rate_damping_ = 1.5;
+    double walking_rate_force_max_ = 20.0;
+    double walking_vel_filter_tau_ = 0.35;
+    double vx_body_filt_ = 0.0;
+    double vy_body_filt_ = 0.0;
+    double wz_filt_ = 0.0;
     bool crossing_freeze_rail_targets_ = false;
     bool bfs_rail_ramp_enabled_ = true;
     double bfs_rail_ramp_rate_ = 0.015;
@@ -2030,6 +2268,9 @@ private:
     Eigen::Vector4d current_sliding_velocities_ = Eigen::Vector4d::Zero();
     Eigen::Vector4d last_attitude_support_delta_ = Eigen::Vector4d::Zero();
     Eigen::Vector3d velocity_cmd_ = Eigen::Vector3d::Zero();
+    Eigen::Vector3d velocity_cmd_target_ = Eigen::Vector3d::Zero();
+    double cmd_linear_slew_rate_ = 0.25;   // m/s^2
+    double cmd_angular_slew_rate_ = 1.0;   // rad/s^2
     Eigen::MatrixXd base_foot_positions_ = Eigen::MatrixXd::Zero(4, 3);
     Eigen::Vector3d com_stance_ = Eigen::Vector3d::Zero();
     // 实时 FK 支撑几何（见 updateSupportGeometry）
