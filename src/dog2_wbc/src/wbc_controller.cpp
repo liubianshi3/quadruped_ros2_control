@@ -86,19 +86,26 @@ Eigen::VectorXd WBCController::computeTorques(
     torques(12 + leg) = leg_torques(3);
   }
 
-  // Static gravity compensation on stance legs. The fixed-base model treats
-  // base_link as ground, so g(q) reports the joint torques needed to hold
-  // each link against gravity at the current configuration. Adding this to
-  // J^T*f eliminates the bias that previously got hand-tuned in the mux.
+  // Static gravity compensation. The fixed-base model treats base_link as
+  // ground, so g(q) reports the joint torques needed to hold each link
+  // against gravity at the current configuration. Adding this to J^T*f
+  // eliminates the bias that previously got hand-tuned in the mux.
   // Gravity itself must also be expressed in the (possibly tilted) base
   // frame: g_base = R_wb^T * (0, 0, -9.81).
+  //
+  // SWING legs need this term the most: each leg is ~1.5 kg (the legs are
+  // half the robot mass), so without its own-weight feedforward the
+  // task-space swing PD (kp_z 300) sags ~5 cm at steady state -- more than
+  // the whole 4-5 cm swing apex. The swing foot never actually cleared the
+  // ground; it dragged and tripped the trunk once per stride (the violent
+  // per-stride wx/wy spikes of run40-54).
   if (params_.gravity_compensation && dog2_model_) {
     const Eigen::VectorXd q = buildFullPinocchioConfiguration(leg_states);
     const Eigen::Vector3d gravity_base =
       R_wb_.transpose() * Eigen::Vector3d(0.0, 0.0, -9.81);
     const Eigen::VectorXd g = dog2_model_->gravityVector(q, gravity_base);
     for (int leg = 0; leg < 4; ++leg) {
-      if (leg_states[leg].swing || !leg_states[leg].in_contact) {
+      if (!leg_states[leg].swing && !leg_states[leg].in_contact) {
         continue;
       }
       const std::string prefix(kLegPrefixes[leg]);
