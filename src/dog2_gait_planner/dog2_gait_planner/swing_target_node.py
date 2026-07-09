@@ -14,21 +14,26 @@ from rclpy.node import Node
 from std_msgs.msg import Float64MultiArray
 
 LEG_NAMES = ["lf", "lh", "rh", "rf"]
-# True stance footholds (base_link frame) for the ACTIVE stage-1 stand pose
-# femur=+1.05, tibia=-1.40 (body height 0.205 m, matching the MPC
-# stance_joint_pose / vertical_support_target_height=0.20), rails locked
-# at 0, from Pinocchio FK of the symmetric URDF. These must track whatever
-# pose the height loop actually holds: the previous table was the FULL
-# stance (tibia -1.10, h=0.268) while the body stood at ~0.19-0.20, so
-# every swing touchdown aimed ~6-7 cm below the real ground and stomped,
-# scrubbing the body sideways (run32: 1.6 m planar careen vs 0.02 m
-# forward projection).
+# Walking footholds (base_link frame) at the stage-1 stand height
+# (0.205 m, rails locked at 0). Two truths bound these values:
+#
+# 1. z must track the height the loop actually holds: the old FULL-stance
+#    table (h=0.268) made every touchdown stomp 6-7 cm into the ground
+#    (run32: 1.6 m planar careen vs 0.02 m forward projection).
+# 2. x is COM-centred, NOT the neutral-pose FK. The neutral stance
+#    (femur 1.05 / tibia -1.40) puts the feet at x = -0.134/+0.143,
+#    whose diagonal midpoint (x=0.0045) sits 4.2 cm from the COM
+#    (x=+0.046): every trot pair then carries a ~3 N*m moment about the
+#    support line -- the one axis a two-point contact cannot actuate --
+#    and the trunk free-tipped every half cycle (run40/41 forward tilt
+#    1-2.4 rad). Centring the feet fore-aft on the COM puts both trot
+#    diagonals through the COM and zeroes that moment by geometry.
 NOMINAL_FOOTS = np.array(
     [
-        [-0.134, -0.118, -0.205],
-        [0.143, -0.118, -0.205],
-        [0.143, 0.118, -0.205],
-        [-0.134, 0.118, -0.205],
+        [-0.092, -0.118, -0.205],
+        [0.184, -0.118, -0.205],
+        [0.184, 0.118, -0.205],
+        [-0.092, 0.118, -0.205],
     ],
     dtype=float,
 )
@@ -95,12 +100,31 @@ class SwingTargetNode(Node):
         self.declare_parameter("swing_fraction", 0.5)
         self.declare_parameter("swing_height", 0.08)
         self.declare_parameter("raibert_k", 0.03)
+        # Cap on the Raibert foothold shift from nominal: body-velocity
+        # transients (tip/careen recoveries reach ~1 m/s) otherwise send
+        # footholds 20+ cm out, beyond the leg workspace.
+        self.declare_parameter("foothold_offset_max", 0.06)
+        # Ground-search overshoot: the swing target ends this far BELOW the
+        # nominal foothold z. The stance/swing schedule is clock-driven, so
+        # if the trunk rides a few cm high at "touchdown" the foot would
+        # otherwise still be airborne when stance force gets applied to it
+        # (leg free-falls, trunk drops onto it -- the per-stride pitch-rate
+        # spikes that seeded every tip). Ending below ground turns the tail
+        # of the swing into a bounded downward press (kp_z * overshoot)
+        # that guarantees contact before the stance phase starts.
+        self.declare_parameter("touchdown_overshoot", 0.02)
         self.declare_parameter("default_cmd_x", 0.0)
         self.declare_parameter("default_cmd_y", 0.0)
 
         self._swing_fraction = clamp01(float(self.get_parameter("swing_fraction").value))
         self._swing_height = float(self.get_parameter("swing_height").value)
         self._raibert_k = float(self.get_parameter("raibert_k").value)
+        self._foothold_offset_max = max(
+            0.0, float(self.get_parameter("foothold_offset_max").value)
+        )
+        self._touchdown_overshoot = max(
+            0.0, float(self.get_parameter("touchdown_overshoot").value)
+        )
         self._cycle_time = 0.8
         self._body_velocity = np.zeros(2, dtype=float)
         self._body_yaw = 0.0
@@ -111,6 +135,7 @@ class SwingTargetNode(Node):
             ],
             dtype=float,
         )
+        self._cmd_yaw_rate = 0.0
         self._target_pos = NOMINAL_FOOTS.copy()
         self._target_vel = np.zeros((4, 3), dtype=float)
         self._states = [
@@ -162,19 +187,44 @@ class SwingTargetNode(Node):
         vy_w = msg.twist.twist.linear.y
         cy = float(np.cos(self._body_yaw))
         sy = float(np.sin(self._body_yaw))
-        self._body_velocity[:] = [
-            cy * vx_w + sy * vy_w,
-            -sy * vx_w + cy * vy_w,
-        ]
+        v_body = np.array(
+            [cy * vx_w + sy * vy_w, -sy * vx_w + cy * vy_w], dtype=float
+        )
+        # ~0.3 s low-pass: strip the trot rock (base-frame velocity swings
+        # +-0.12 m/s at gait frequency) before it feeds the Raibert term.
+        self._body_velocity += 0.15 * (v_body - self._body_velocity)
 
     def _on_gait_command(self, msg: GaitCommand) -> None:
         self._cmd_velocity[:] = [msg.linear_x, msg.linear_y]
+        self._cmd_yaw_rate = float(msg.angular_z)
 
     def _foothold(self, leg: int) -> np.ndarray:
-        stance_time = self._cycle_time * (1.0 - self._swing_fraction)
         foot = NOMINAL_FOOTS[leg].copy()
-        foot[:2] += 0.5 * stance_time * self._body_velocity
-        foot[:2] += self._raibert_k * (self._body_velocity - self._cmd_velocity)
+        # NO symmetric velocity lead. The footholds are COM-centred so that
+        # both trot diagonals pass through the COM (the axis a 2-point
+        # support cannot actuate); a velocity lead of 0.5*T_st*v shifts
+        # every touchdown 2-3 cm forward and re-creates exactly the tip
+        # moment that careened run40/run60. At quasi-static speeds the
+        # stance feet drifting a few cm back in the workspace during a
+        # cycle is harmless; the Raibert term below still corrects
+        # measured-vs-commanded velocity error.
+        offset = self._raibert_k * (self._body_velocity - self._cmd_velocity)
+        norm = float(np.linalg.norm(offset))
+        if norm > self._foothold_offset_max > 0.0:
+            offset *= self._foothold_offset_max / norm
+        foot[:2] += offset
+        # Yaw lead: rotate the foothold by half the yaw the body will cover
+        # during the stance. Without it a commanded turn lands the feet at
+        # the unrotated nominal and the body twists on planted feet --
+        # lateral scrub, tip, height dips (run65 turn z=0.083).
+        stance_time = self._cycle_time * (1.0 - self._swing_fraction)
+        dtheta = 0.5 * stance_time * self._cmd_yaw_rate
+        if abs(dtheta) > 1e-6:
+            c, s = float(np.cos(dtheta)), float(np.sin(dtheta))
+            x, y = foot[0], foot[1]
+            foot[0] = c * x - s * y
+            foot[1] = s * x + c * y
+        foot[2] -= self._touchdown_overshoot
         return foot
 
     def _on_contact_phase(self, msg: ContactPhase) -> None:

@@ -2,8 +2,20 @@ dog2_gait_scheduler:
   ros__parameters:
     use_sim_time: true
     gait: trot
-    cycle_time: 0.8
-    publish_rate: 20.0
+    # Support-first trot: the trunk free-tips about the diagonal support
+    # line during 2-leg phases (COM off the line -> ~3 N*m about the one
+    # axis two contacts cannot actuate; ~0.9 rad/s builds in 0.2 s), and
+    # the 4-leg overlap must absorb that angular momentum with the fz
+    # attitude trim. 0.8s/0.5duty fell in the first half cycle (run40);
+    # duty 0.6 diverged in 2-3 cycles (run43/44); duty 0.7 survived the
+    # forward stage but accumulated tip over ~8 strides (run50). 0.75
+    # spends half of every cycle in 4-leg recovery (0.15 s two-leg /
+    # 0.15 s four-leg) -- slower steps, but statically recoverable.
+    cycle_time: 0.6
+    duty_factor: 0.75
+    # 50 Hz: at 20 Hz a 0.5 s cycle only gets 10 mask samples, i.e. up to
+    # 50 ms of stance/swing switching jitter fed to the WBC and MPC.
+    publish_rate: 50.0
     cmd_vel_topic: /cmd_vel
     contact_phase_topic: /dog2/gait/contact_phase
     gait_command_topic: /dog2/gait/command

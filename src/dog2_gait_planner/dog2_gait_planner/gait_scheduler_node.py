@@ -13,15 +13,29 @@ from rclpy.node import Node
 LEG_NAMES = ["lf", "lh", "rh", "rf"]
 
 
-def compute_phase_array(gait: str, phase: float, moving: bool) -> List[int]:
+# Diagonal-pair phase offsets: lf/rh start their stance at phase 0,
+# lh/rf half a cycle later.
+_TROT_OFFSETS = (0.0, 0.5, 0.0, 0.5)
+
+
+def compute_phase_array(
+    gait: str, phase: float, moving: bool, duty: float = 0.5
+) -> List[int]:
     if not moving:
         return [ContactPhase.STANCE for _ in LEG_NAMES]
     if gait == "trot":
+        # duty > 0.5 gives an all-stance overlap between the diagonal
+        # pairs. A two-point diagonal support has zero authority about the
+        # line joining the feet, and this robot's COM sits ~2.7 cm off
+        # that line: with an instant 50/50 switch the trunk free-tips
+        # ~0.4 rad every half cycle (run40 forward tilt hit 1.07 rad in
+        # the first half cycle). The overlap windows catch the tip with
+        # four feet before it accumulates.
         return [
-            ContactPhase.STANCE if phase < 0.5 else ContactPhase.SWING,
-            ContactPhase.SWING if phase < 0.5 else ContactPhase.STANCE,
-            ContactPhase.STANCE if phase < 0.5 else ContactPhase.SWING,
-            ContactPhase.SWING if phase < 0.5 else ContactPhase.STANCE,
+            ContactPhase.STANCE
+            if ((phase - offset) % 1.0) < duty
+            else ContactPhase.SWING
+            for offset in _TROT_OFFSETS
         ]
     return [ContactPhase.STANCE, ContactPhase.STANCE, ContactPhase.STANCE, ContactPhase.SWING]
 
@@ -32,6 +46,7 @@ class GaitSchedulerNode(Node):
 
         self.declare_parameter("gait", "trot")
         self.declare_parameter("cycle_time", 0.8)
+        self.declare_parameter("duty_factor", 0.5)
         self.declare_parameter("publish_rate", 20.0)
         self.declare_parameter("cmd_vel_topic", "/cmd_vel")
         self.declare_parameter("contact_phase_topic", "/dog2/gait/contact_phase")
@@ -39,6 +54,9 @@ class GaitSchedulerNode(Node):
 
         self._gait = str(self.get_parameter("gait").value)
         self._cycle_time = max(0.1, float(self.get_parameter("cycle_time").value))
+        self._duty_factor = min(
+            0.9, max(0.5, float(self.get_parameter("duty_factor").value))
+        )
         self._publish_rate = max(1.0, float(self.get_parameter("publish_rate").value))
         self._elapsed = 0.0
         self._moving = False
@@ -68,12 +86,20 @@ class GaitSchedulerNode(Node):
         )
         self.create_timer(1.0 / self._publish_rate, self._on_timer)
 
+    def _set_moving(self, moving: bool) -> None:
+        # Start every walk at phase 0: with duty > 0.5 that is inside the
+        # all-stance overlap, so the first stride begins from a supported
+        # 4-leg state instead of an arbitrary mid-swing phase.
+        if moving and not self._moving:
+            self._elapsed = 0.0
+        self._moving = moving
+
     def _on_cmd_vel(self, msg: Twist) -> None:
         self._last_cmd = msg
-        self._moving = any(
+        self._set_moving(any(
             abs(value) > 1e-3
             for value in [msg.linear.x, msg.linear.y, msg.angular.z]
-        )
+        ))
 
     def _on_gait_command(self, msg: GaitCommand) -> None:
         if msg.header.frame_id == self.get_name():
@@ -82,10 +108,10 @@ class GaitSchedulerNode(Node):
         self._last_cmd.linear.x = float(msg.linear_x)
         self._last_cmd.linear.y = float(msg.linear_y)
         self._last_cmd.angular.z = float(msg.angular_z)
-        self._moving = any(
+        self._set_moving(any(
             abs(value) > 1e-3
             for value in [msg.linear_x, msg.linear_y, msg.angular_z]
-        )
+        ))
 
     def _on_timer(self) -> None:
         self._elapsed = (self._elapsed + 1.0 / self._publish_rate) % self._cycle_time
@@ -95,7 +121,9 @@ class GaitSchedulerNode(Node):
         contact_msg.header.stamp = self.get_clock().now().to_msg()
         contact_msg.gait = self._gait
         contact_msg.leg_names = list(LEG_NAMES)
-        contact_msg.phase = compute_phase_array(self._gait, phase, self._moving)
+        contact_msg.phase = compute_phase_array(
+            self._gait, phase, self._moving, self._duty_factor
+        )
         contact_msg.cycle_time = float(self._cycle_time)
 
         gait_cmd_msg = GaitCommand()
