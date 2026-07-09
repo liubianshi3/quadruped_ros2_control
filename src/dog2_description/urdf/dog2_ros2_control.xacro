@@ -11,25 +11,42 @@
     </joint>
   </xacro:macro>
 
-  <xacro:macro name="dog2_ros2_control" params="controllers_yaml">
+  <!-- Rail joints must be position-only. In gz_ros2_control 0.7.x, merely
+       exposing an effort command interface sets the joint's EFFORT control
+       bit at init, which creates a persistent JointForceCmd component in
+       gz-sim. The Fortress Physics system then ignores JointVelocityCmd (the
+       position servo) whenever JointForceCmd exists on the joint, so the
+       rail "lock" never engages and the rails stay force-free and drift.
+       Position-only also means gz's hold_joints fallback velocity-holds the
+       rails at 0 from the first physics step until the controller claims
+       them. -->
+  <xacro:macro name="dog2_rail_control_joint" params="name">
+    <joint name="${name}">
+      <command_interface name="position"/>
+      <state_interface name="position"/>
+      <state_interface name="velocity"/>
+    </joint>
+  </xacro:macro>
+
+  <xacro:macro name="dog2_ros2_control" params="controllers_yaml robot_param_node:=robot_state_publisher">
     <!-- ROS 2 Control -->
     <ros2_control name="GazeboSimSystem" type="system">
       <hardware>
         <plugin>gz_ros2_control/GazeboSimSystem</plugin>
       </hardware>
-      <xacro:dog2_control_joint name="lf_rail_joint"/>
+      <xacro:dog2_rail_control_joint name="lf_rail_joint"/>
       <xacro:dog2_control_joint name="lf_coxa_joint"/>
       <xacro:dog2_control_joint name="lf_femur_joint"/>
       <xacro:dog2_control_joint name="lf_tibia_joint"/>
-      <xacro:dog2_control_joint name="lh_rail_joint"/>
+      <xacro:dog2_rail_control_joint name="lh_rail_joint"/>
       <xacro:dog2_control_joint name="lh_coxa_joint"/>
       <xacro:dog2_control_joint name="lh_femur_joint"/>
       <xacro:dog2_control_joint name="lh_tibia_joint"/>
-      <xacro:dog2_control_joint name="rh_rail_joint"/>
+      <xacro:dog2_rail_control_joint name="rh_rail_joint"/>
       <xacro:dog2_control_joint name="rh_coxa_joint"/>
       <xacro:dog2_control_joint name="rh_femur_joint"/>
       <xacro:dog2_control_joint name="rh_tibia_joint"/>
-      <xacro:dog2_control_joint name="rf_rail_joint"/>
+      <xacro:dog2_rail_control_joint name="rf_rail_joint"/>
       <xacro:dog2_control_joint name="rf_coxa_joint"/>
       <xacro:dog2_control_joint name="rf_femur_joint"/>
       <xacro:dog2_control_joint name="rf_tibia_joint"/>
@@ -39,7 +56,7 @@
       <plugin filename="libgz_ros2_control-system.so" name="gz_ros2_control::GazeboSimROS2ControlPlugin">
         <parameters>${controllers_yaml}</parameters>
         <robot_param>robot_description</robot_param>
-        <robot_param_node>robot_state_publisher</robot_param_node>
+        <robot_param_node>${robot_param_node}</robot_param_node>
       </plugin>
     </gazebo>
   </xacro:macro>

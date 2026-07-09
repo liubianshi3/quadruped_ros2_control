@@ -19,7 +19,7 @@ else()
 endif()
 
 install(
-  DIRECTORY urdf meshes launch rviz config scripts
+  DIRECTORY urdf meshes meshes_symmetric launch rviz config scripts
   DESTINATION share/${PROJECT_NAME}
   USE_SOURCE_PERMISSIONS
 )
@@ -77,6 +77,15 @@ if(BUILD_TESTING AND DOG2_ENABLE_URDF_SHIFT_BOUNDARY_CHECK)
     else()
       message(WARNING "Skip dog2_stage2_rail_geometry_check: python3 pinocchio module is unavailable")
     endif()
+
+    add_test(
+      NAME dog2_symmetric_urdf_guardrail_check
+      COMMAND
+        ${PYTHON3_EXECUTABLE}
+        -m pytest
+        ${CMAKE_CURRENT_SOURCE_DIR}/test/test_symmetric_check_script.py
+        -q
+    )
   else()
     message(WARNING "Skip dog2_urdf_shift_boundary_check: python3 or xacro not found")
   endif()

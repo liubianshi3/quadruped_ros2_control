@@ -2,9 +2,8 @@
 <robot xmlns:xacro="http://www.ros.org/wiki/xacro">
   <!--
     Dog2 symmetric xacro properties.
-    Mirrored leg geometry: left/right shin COM x symmetric, knee Z symmetric,
-    foot tip identical for leg3/leg4. Real-model asymmetries (leg4 independent
-    shin/foot drift, rf asymmetric hip offset, knee Z difference) are removed.
+    Clean model for IK/WBC/MPC: trunk is a centered primitive box with pure-diagonal
+    inertia; leg geometry is strictly mirror-symmetric.
     All non-leg properties (limits, contact, frame_inertial) are identical to
     dog2_properties.xacro and kept here for self-contained expandability.
   -->
@@ -25,7 +24,14 @@
   <xacro:property name="tibia_upper_limit" value="2.8"/>
   <xacro:property name="tibia_effort" value="50"/>
   <xacro:property name="tibia_velocity" value="20"/>
-  <xacro:property name="prismatic_effort" value="100"/>
+  <!-- Rail lock architecture: the rails are normally clamped by a position
+       servo (rail_position_controller). The effort limit bounds the servo's
+       holding force in gz physics, so it must exceed worst-case locomotion
+       impacts or the "lock" gets shoved to the mechanical stop. Touchdown
+       impulse spikes exceed 800 N through the leg chain; 5000 N keeps the
+       rail transient within the 5 mm lock budget and models a rigid
+       mechanical brake. -->
+  <xacro:property name="prismatic_effort" value="5000"/>
   <xacro:property name="prismatic_velocity" value="5"/>
 
   <!-- Shared angle constants -->
@@ -46,9 +52,12 @@
   <xacro:property name="leg_thigh_mesh_flip_rpy" value="0 ${PI_CONST} 0"/>
   <!-- Right-side coxa decomposition is data-driven; preserve q=0 SE(3) if relocating mounts. -->
 
-  <!-- Joint passive dynamics (simulation stabilization) -->
-  <xacro:property name="prismatic_damping" value="0.25"/>
-  <xacro:property name="prismatic_friction" value="0.05"/>
+  <!-- Joint passive dynamics (simulation stabilization).
+       Rail damping/friction model a preloaded rail with brake: they absorb
+       foot-touchdown impulses so the position lock's transient excursion
+       stays within the smoke-test rail drift budget (5 mm). -->
+  <xacro:property name="prismatic_damping" value="8.0"/>
+  <xacro:property name="prismatic_friction" value="1.0"/>
   <xacro:property name="hip_damping" value="0.12"/>
   <xacro:property name="hip_friction" value="0.02"/>
   <xacro:property name="femur_damping" value="0.15"/>
@@ -56,11 +65,16 @@
   <xacro:property name="tibia_damping" value="0.15"/>
   <xacro:property name="tibia_friction" value="0.02"/>
 
-  <!-- Contact model (conservative baseline for stability) -->
+  <!-- Contact model. kp 2e4 keeps static depression ~1.5 mm at 12 kg.
+       kd 20 left the 4-foot contact resonance (~13 Hz) with damping ratio
+       0.04: every touchdown rang for seconds and the 20 Hz force loop
+       aliased that ring into its velocity feedback (run28/29 height
+       bounce). kd 300 puts the contact at ζ≈0.55, i.e. damped rubber
+       feet instead of a tuning fork. -->
   <xacro:property name="foot_contact_mu1" value="1.0"/>
   <xacro:property name="foot_contact_mu2" value="1.0"/>
   <xacro:property name="foot_contact_kp" value="2.0e4"/>
-  <xacro:property name="foot_contact_kd" value="20.0"/>
+  <xacro:property name="foot_contact_kd" value="300.0"/>
   <xacro:property name="foot_contact_min_depth" value="0.0005"/>
   <xacro:property name="foot_contact_max_vel" value="0.2"/>
 
@@ -91,47 +105,73 @@
     Y/Z: built from foot_sphere_radius helpers plus literals in leg12_*, leg3_*, leg4_* below.
     symmetric: leg4_foot_tip_xyz = leg3_foot_tip_xyz (no independent leg4 drift).
   -->
-  <xacro:property name="foot_sphere_radius" value="0.012"/>
+  <xacro:property name="foot_sphere_radius" value="0.020"/>
   <xacro:property name="foot_tip_plus_y_half_diameter_m" value="${foot_sphere_radius}"/>
   <xacro:property name="foot_tip_minus_y_one_and_half_diameter_m" value="${3 * foot_sphere_radius}"/>
   <xacro:property name="foot_tip_lateral_inboard_m" value="0.024"/>
-  <xacro:property name="leg12_foot_tip_xyz" value="${foot_tip_lateral_inboard_m} ${foot_tip_plus_y_half_diameter_m - foot_tip_minus_y_one_and_half_diameter_m - 0.269179} -0.142168"/>
-  <xacro:property name="leg3_foot_tip_xyz" value="-${foot_tip_lateral_inboard_m} ${foot_tip_plus_y_half_diameter_m - foot_tip_minus_y_one_and_half_diameter_m - 0.269179} -0.142168"/>
-  <xacro:property name="leg4_foot_tip_xyz" value="-${foot_tip_lateral_inboard_m} ${foot_tip_plus_y_half_diameter_m - foot_tip_minus_y_one_and_half_diameter_m - 0.269179} -0.142168"/>
+  <xacro:property name="leg12_foot_tip_xyz" value="${foot_tip_lateral_inboard_m} ${foot_tip_plus_y_half_diameter_m - foot_tip_minus_y_one_and_half_diameter_m - 0.269179} ${-0.130168 - foot_sphere_radius}"/>
+  <xacro:property name="leg3_foot_tip_xyz" value="-${foot_tip_lateral_inboard_m} ${foot_tip_plus_y_half_diameter_m - foot_tip_minus_y_one_and_half_diameter_m - 0.269179} ${-0.130168 - foot_sphere_radius}"/>
+  <xacro:property name="leg4_foot_tip_xyz" value="-${foot_tip_lateral_inboard_m} ${foot_tip_plus_y_half_diameter_m - foot_tip_minus_y_one_and_half_diameter_m - 0.269179} ${-0.130168 - foot_sphere_radius}"/>
 
-  <!--
-    Semantic base root (current source-of-truth)
-    ============================================================
-    Historical urdf_shift_* bookkeeping and the fake URDF-level
-    `base_footprint` root have both been removed. `base_link` is now the only
-    URDF root for control / dynamics / leg installation.
-
-    STRICT BOUNDARY:
-      * DO NOT re-introduce urdf_shift_* or a second hidden compensation layer
-        in TF publishers, sensor extrinsics, MPC/WBC kinematics, Python config,
-        or controller code.
-      * DO NOT re-introduce a fake `base_footprint` or another fixed root
-        wrapper inside the URDF just to preserve historical naming.
-
-    MAINTENANCE RULE:
-      If a planning/ground-projection frame is needed in the future, publish a
-      runtime `base_footprint` TF outside the URDF. Keep the xacro rooted at
-      semantic `base_link` and re-baseline the guardrails and stand-geometry
-      golden only when the semantic base definition itself changes.
-  -->
-  <!-- Semantic trunk root definition: base_link is the control / dynamics / leg-install root. -->
-  <xacro:property name="base_link_semantic_origin_x" value="0.248975"/>
-  <xacro:property name="base_link_semantic_origin_y" value="0.122500"/>
-  <xacro:property name="base_link_semantic_origin_z" value="0.0"/>
-  <!-- Conservative trunk collision box derived from the legacy collision mesh bbox.
-       The upper ~1/3 is trimmed away while keeping the lower envelope unchanged. -->
-  <xacro:property name="trunk_collision_box_xyz"
-                  value="${0.243115 - base_link_semantic_origin_x} ${0.122499 - base_link_semantic_origin_y} ${-0.006837 - base_link_semantic_origin_z}"/>
+  <!-- Trunk collision box: centered primitive at base_link origin. -->
+  <xacro:property name="trunk_collision_box_xyz" value="0 0 0"/>
   <xacro:property name="trunk_collision_box_size" value="0.342 0.160 0.100333"/>
 
   <xacro:property name="l1_inertia_xyz" value="-0.0159999123716776 0.000737036465389251 0.0261570925915838"/>
   <xacro:property name="l2_inertia_xyz" value="0.0159999123716776 0.000737036465389251 0.0261570925915838"/>
   <xacro:property name="l3_inertia_xyz" value="-0.0159999123716776 0.000737036465389251 0.0261570925915838"/>
   <xacro:property name="l4_inertia_xyz" value="0.0159999123716776 0.000737036465389251 0.0261570925915838"/>
+
+  <!-- Leg link inertia tensors. Femur/tibia cross terms zeroed for symmetric dynamics. -->
+  <xacro:property name="rail_ixx" value="0.0001071"/>
+  <xacro:property name="rail_iyy" value="8.386e-05"/>
+  <xacro:property name="rail_izz" value="7.869e-05"/>
+  <xacro:property name="coxa_ixx" value="0.0001"/>
+  <xacro:property name="coxa_iyy" value="0.0001"/>
+  <xacro:property name="coxa_izz" value="0.0001"/>
+  <xacro:property name="femur_ixx" value="0.000666"/>
+  <xacro:property name="femur_ixy" value="0"/>
+  <xacro:property name="femur_ixz" value="0"/>
+  <xacro:property name="femur_iyy" value="0.000356"/>
+  <xacro:property name="femur_iyz" value="0"/>
+  <xacro:property name="femur_izz" value="0.000534"/>
+  <xacro:property name="tibia_ixx" value="0.004517"/>
+  <xacro:property name="tibia_ixy" value="0"/>
+  <xacro:property name="tibia_ixz" value="0"/>
+  <xacro:property name="tibia_iyy" value="0.000975"/>
+  <xacro:property name="tibia_iyz" value="0"/>
+  <xacro:property name="tibia_izz" value="0.003666"/>
+  <xacro:property name="foot_ixx" value="8.0e-06"/>
+  <xacro:property name="foot_iyy" value="8.0e-06"/>
+  <xacro:property name="foot_izz" value="8.0e-06"/>
+
+  <!-- Primitive link geometry parameters (use_primitive_links:=true).
+       Femur cylinder spans from femur_joint origin to tibia_axis_fixed joint.
+       Tibia cylinder spans from tibia_joint origin to foot_joint origin.
+       All values are in the respective link frames. -->
+  <!-- Femur primitive (same for all legs) -->
+  <xacro:property name="femur_primitive_xyz" value="0 -0.076005 0.064985"/>
+  <xacro:property name="femur_primitive_rpy" value="0.863401147 0 0"/>
+  <xacro:property name="femur_primitive_length" value="0.1999981025"/>
+  <xacro:property name="femur_primitive_radius" value="0.018"/>
+  <xacro:property name="femur_primitive_ixx" value="0.001365708"/>
+  <xacro:property name="femur_primitive_iyy" value="0.001365708"/>
+  <xacro:property name="femur_primitive_izz" value="0.0000648"/>
+  <!-- Left-leg tibia primitive -->
+  <xacro:property name="tibia_left_primitive_xyz" value="0.012 -0.1465895 -0.071084"/>
+  <xacro:property name="tibia_left_primitive_rpy" value="1.113746389 2.974355059 0"/>
+  <xacro:property name="tibia_left_primitive_length" value="0.3267134314"/>
+  <xacro:property name="tibia_left_primitive_radius" value="0.014"/>
+  <xacro:property name="tibia_left_primitive_ixx" value="0.004472069"/>
+  <xacro:property name="tibia_left_primitive_iyy" value="0.004472069"/>
+  <xacro:property name="tibia_left_primitive_izz" value="0.000049"/>
+  <!-- Right-leg tibia primitive (mirrored in X) -->
+  <xacro:property name="tibia_right_primitive_xyz" value="-0.012 -0.1465895 -0.071084"/>
+  <xacro:property name="tibia_right_primitive_rpy" value="1.113746389 -2.974355059 0"/>
+  <xacro:property name="tibia_right_primitive_length" value="${tibia_left_primitive_length}"/>
+  <xacro:property name="tibia_right_primitive_radius" value="${tibia_left_primitive_radius}"/>
+  <xacro:property name="tibia_right_primitive_ixx" value="${tibia_left_primitive_ixx}"/>
+  <xacro:property name="tibia_right_primitive_iyy" value="${tibia_left_primitive_iyy}"/>
+  <xacro:property name="tibia_right_primitive_izz" value="${tibia_left_primitive_izz}"/>
 
 </robot>

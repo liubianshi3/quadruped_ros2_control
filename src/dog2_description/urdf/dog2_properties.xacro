@@ -16,12 +16,23 @@
   <xacro:property name="tibia_upper_limit" value="2.8"/>
   <xacro:property name="tibia_effort" value="50"/>
   <xacro:property name="tibia_velocity" value="20"/>
-  <xacro:property name="prismatic_effort" value="100"/>
+  <!-- Rail lock architecture: the rails are normally clamped by a position
+       servo (rail_position_controller). The effort limit bounds the servo's
+       holding force in gz physics, so it must exceed worst-case locomotion
+       impacts or the "lock" gets shoved to the mechanical stop. -->
+  <!-- Rail lock: touchdown impulse spikes exceed 800 N through the leg chain;
+       5000 N keeps the position-servo rail transient within the 5 mm lock
+       budget and models a rigid mechanical brake. -->
+  <xacro:property name="prismatic_effort" value="5000"/>
   <xacro:property name="prismatic_velocity" value="5"/>
 
   <!-- Shared angle constants -->
   <xacro:property name="PI_CONST" value="3.141592653589793"/>
   <xacro:property name="half_pi" value="1.5707963267948966"/>
+
+  <!-- Mesh roots. Symmetric variants override these properties. -->
+  <xacro:property name="dog2_mesh_root" value="package://dog2_description/meshes"/>
+  <xacro:property name="dog2_collision_mesh_root" value="package://dog2_description/meshes/collision"/>
 
   <!-- 左右腿镜像：rail / coxa 固定段 / femur-tibia 轴规整层由常量表达。 -->
   <xacro:property name="leg_rail_rpy_L" value="${half_pi} 0 0"/>
@@ -36,9 +47,12 @@
   <xacro:property name="leg_thigh_mesh_flip_rpy" value="0 ${PI_CONST} 0"/>
   <!-- Right-side coxa decomposition is data-driven; preserve q=0 SE(3) if relocating mounts. -->
 
-  <!-- Joint passive dynamics (simulation stabilization) -->
-  <xacro:property name="prismatic_damping" value="0.25"/>
-  <xacro:property name="prismatic_friction" value="0.05"/>
+  <!-- Joint passive dynamics (simulation stabilization).
+       Rail damping/friction model a preloaded rail with brake: they absorb
+       foot-touchdown impulses so the position lock's transient excursion
+       stays within the smoke-test rail drift budget (5 mm). -->
+  <xacro:property name="prismatic_damping" value="8.0"/>
+  <xacro:property name="prismatic_friction" value="1.0"/>
   <xacro:property name="hip_damping" value="0.12"/>
   <xacro:property name="hip_friction" value="0.02"/>
   <xacro:property name="femur_damping" value="0.15"/>
@@ -121,5 +135,28 @@
   <xacro:property name="l2_inertia_xyz" value="0.0159999123716776 0.000737036465389251 0.0261570925915838"/>
   <xacro:property name="l3_inertia_xyz" value="-0.0159999123716776 0.000737036465389251 0.0261570925915838"/>
   <xacro:property name="l4_inertia_xyz" value="0.0159999123716776 0.000737036465389251 0.0261570925915838"/>
+
+  <!-- Leg link inertia tensors (default values, used by dog2_leg_macro.xacro) -->
+  <xacro:property name="rail_ixx" value="0.0001071"/>
+  <xacro:property name="rail_iyy" value="8.386e-05"/>
+  <xacro:property name="rail_izz" value="7.869e-05"/>
+  <xacro:property name="coxa_ixx" value="0.0001"/>
+  <xacro:property name="coxa_iyy" value="0.0001"/>
+  <xacro:property name="coxa_izz" value="0.0001"/>
+  <xacro:property name="femur_ixx" value="0.000666"/>
+  <xacro:property name="femur_ixy" value="0"/>
+  <xacro:property name="femur_ixz" value="0"/>
+  <xacro:property name="femur_iyy" value="0.000356"/>
+  <xacro:property name="femur_iyz" value="0.000266"/>
+  <xacro:property name="femur_izz" value="0.000534"/>
+  <xacro:property name="tibia_ixx" value="0.004517"/>
+  <xacro:property name="tibia_ixy" value="0.0000087"/>
+  <xacro:property name="tibia_ixz" value="0.0000042"/>
+  <xacro:property name="tibia_iyy" value="0.000975"/>
+  <xacro:property name="tibia_iyz" value="-0.001769"/>
+  <xacro:property name="tibia_izz" value="0.003666"/>
+  <xacro:property name="foot_ixx" value="2.88e-06"/>
+  <xacro:property name="foot_iyy" value="2.88e-06"/>
+  <xacro:property name="foot_izz" value="2.88e-06"/>
 
 </robot>

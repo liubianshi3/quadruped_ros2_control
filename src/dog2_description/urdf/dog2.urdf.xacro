@@ -10,10 +10,14 @@
 <robot xmlns:xacro="http://www.ros.org/wiki/xacro" name="dog2">
 
   <xacro:arg name="controllers_yaml" default="$(find dog2_description)/config/ros2_controllers.yaml"/>
+  <xacro:arg name="robot_param_node" default="robot_state_publisher"/>
   <xacro:property name="controllers_yaml" value="$(arg controllers_yaml)"/>
+  <xacro:property name="robot_param_node" value="$(arg robot_param_node)"/>
 
   <!-- Shared constants and tiny helper macros. Keep this include before base_link and leg macros. -->
   <xacro:include filename="$(find dog2_description)/urdf/dog2_properties.xacro"/>
+  <xacro:property name="dog2_mesh_root" value="package://dog2_description/meshes"/>
+  <xacro:property name="dog2_collision_mesh_root" value="package://dog2_description/meshes/collision"/>
 
   <!-- Current trunk ownership: base_link is the URDF / ROS / control / Pinocchio root frame. -->
   <link name="base_link">
@@ -48,7 +52,7 @@
     <visual>
       <origin xyz="${0.0 - base_link_semantic_origin_x - 0.9780} ${0.0 - base_link_semantic_origin_y + 0.87203} -0.2649" rpy="0 0 0"/>
       <geometry>
-        <mesh filename="package://dog2_description/meshes/base_link.STL"/>
+        <mesh filename="${dog2_mesh_root}/base_link.STL"/>
       </geometry>
       <material name="mat_base_gray">
         <color rgba="0.752941176470588 0.752941176470588 0.752941176470588 1"/>
@@ -118,6 +122,6 @@
              foot_tip_xyz="${leg4_foot_tip_xyz}"/>
 
   <xacro:include filename="$(find dog2_description)/urdf/dog2_ros2_control.xacro"/>
-  <xacro:dog2_ros2_control controllers_yaml="${controllers_yaml}"/>
+  <xacro:dog2_ros2_control controllers_yaml="${controllers_yaml}" robot_param_node="${robot_param_node}"/>
 
 </robot>

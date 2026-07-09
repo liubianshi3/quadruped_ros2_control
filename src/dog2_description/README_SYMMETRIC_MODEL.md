@@ -35,6 +35,15 @@ ros2 launch dog2_motion_control spider_fortress_simple.launch.py model_variant:=
 ros2 launch dog2_motion_control spider_gazebo_position.launch.py model_variant:=symmetric
 ros2 launch dog2_bringup control_stack.launch.py model_variant:=symmetric
 ros2 launch dog2_bringup effort_research_sim.launch.py model_variant:=symmetric
+
+# RViz2 直接查看 symmetric mesh
+ros2 launch dog2_description view_dog2_xacro.launch.py model_variant:=symmetric
+
+# Gazebo Fortress GUI 查看 symmetric mesh
+ros2 launch dog2_description dog2_fortress_with_gui.launch.py model_variant:=symmetric
+
+# Gazebo Fortress headless smoke test
+ros2 launch dog2_description gazebo_headless.launch.py model_variant:=symmetric
 ```
 
 ### Python 控制模块中选择 symmetric 参数
@@ -55,8 +64,8 @@ solver = create_kinematics_solver(model_variant="symmetric")
 ### 重要约束
 
 - **不允许在同一次仿真里 URDF 用 symmetric、控制参数却用 real**（或者反之），否则 mount、惯性、足端不一致
-- Blender visual mesh 和 collision mesh 镜像尚未完成
-- 当前 symmetric 模型优先保证**关节 / 足端 / 惯性 / 控制参数**严格对称
+- Blender visual mesh 和 collision mesh 已生成到 `src/dog2_description/meshes_symmetric/`
+- 当前 symmetric 模型保证**关节 / 足端 / 惯性 / 控制参数 / visual mesh / collision mesh**使用独立对称变体
 - real 模型的 `dog2.urdf.xacro`、`dog2_properties.xacro`、`leg_parameters.py` **默认行为永远不变**
 
 ## 验证

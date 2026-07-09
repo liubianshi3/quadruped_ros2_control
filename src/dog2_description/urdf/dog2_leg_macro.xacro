@@ -36,23 +36,30 @@
   <!-- Leg macro -->
   <xacro:macro name="leg" params="prefix side leg_num parent_link rail_axis p_low p_up thigh_xyz shin_xyz slider_inertia_xyz foot_tip_xyz
                                  hip_xyz:='-0.016 0.0199 0.055'
-                                 knee_xyz:='-0.0233 -0.055 0.0274'">
+                                 knee_xyz:='-0.0233 -0.055 0.0274'
+                                 use_primitive_links:='false'
+                                 femur_primitive_xyz:='0 0 0' femur_primitive_rpy:='0 0 0'
+                                 femur_primitive_length:='0' femur_primitive_radius:='0'
+                                 femur_primitive_ixx:='0' femur_primitive_iyy:='0' femur_primitive_izz:='0'
+                                 tibia_primitive_xyz:='0 0 0' tibia_primitive_rpy:='0 0 0'
+                                 tibia_primitive_length:='0' tibia_primitive_radius:='0'
+                                 tibia_primitive_ixx:='0' tibia_primitive_iyy:='0' tibia_primitive_izz:='0'">
 
   <link name="${prefix}_rail_link">
     <inertial>
       <origin rpy="0 0 0" xyz="${slider_inertia_xyz}"/>
       <mass value="0.3"/>
-      <inertia ixx="0.0001071" ixy="0" ixz="0" iyy="8.386e-05" iyz="0" izz="7.869e-05"/>
+      <inertia ixx="${rail_ixx}" ixy="0" ixz="0" iyy="${rail_iyy}" iyz="0" izz="${rail_izz}"/>
     </inertial>
     <visual>
       <geometry>
-        <mesh filename="package://dog2_description/meshes/l${leg_num}.STL"/>
+        <mesh filename="${dog2_mesh_root}/l${leg_num}.STL"/>
       </geometry>
       <material name="mat_white"><color rgba="1 1 1 1"/></material>
     </visual>
     <collision>
       <geometry>
-        <mesh filename="package://dog2_description/meshes/collision/l${leg_num}_collision.STL"/>
+        <mesh filename="${dog2_collision_mesh_root}/l${leg_num}_collision.STL"/>
       </geometry>
     </collision>
   </link>
@@ -93,17 +100,17 @@
     <inertial>
       <origin rpy="0 0 0" xyz="-0.0233 -0.0383 0.000879"/>
       <mass value="0.25"/>
-      <inertia ixx="0.0001" ixy="0" ixz="0" iyy="0.0001" iyz="0" izz="0.0001"/>
+      <inertia ixx="${coxa_ixx}" ixy="0" ixz="0" iyy="${coxa_iyy}" iyz="0" izz="${coxa_izz}"/>
     </inertial>
     <visual>
       <geometry>
-        <mesh filename="package://dog2_description/meshes/l${leg_num}1.STL"/>
+        <mesh filename="${dog2_mesh_root}/l${leg_num}1.STL"/>
       </geometry>
       <material name="mat_blue"><color rgba="0.266 0.529 1 1"/></material>
     </visual>
     <collision>
       <geometry>
-        <mesh filename="package://dog2_description/meshes/collision/l${leg_num}1_collision.STL"/>
+        <mesh filename="${dog2_collision_mesh_root}/l${leg_num}1_collision.STL"/>
       </geometry>
     </collision>
   </link>
@@ -123,31 +130,53 @@
   </joint>
 
   <link name="${prefix}_femur_link">
-    <inertial>
-      <origin rpy="0 0 0" xyz="${thigh_xyz}"/>
-      <mass value="0.4"/>
-      <inertia ixx="0.000666" ixy="0" ixz="0" iyy="0.000356" iyz="0.000266" izz="0.000534"/>
-    </inertial>
-    <!-- Femur mesh/collision-only rpy (not joint semantics). rf: CAD mesh flip via leg_thigh_mesh_flip_rpy. -->
-    <xacro:property name="thigh_vis_rpy" value="0 0 0"/>
-    <xacro:property name="thigh_col_rpy_eff" value="0 0 0"/>
-    <xacro:if value="${prefix == 'rf'}">
-      <xacro:property name="thigh_vis_rpy" value="${leg_thigh_mesh_flip_rpy}"/>
-      <xacro:property name="thigh_col_rpy_eff" value="${leg_thigh_mesh_flip_rpy}"/>
+    <xacro:if value="${use_primitive_links}">
+      <inertial>
+        <origin rpy="${femur_primitive_rpy}" xyz="${femur_primitive_xyz}"/>
+        <mass value="0.4"/>
+        <inertia ixx="${femur_primitive_ixx}" ixy="0" ixz="0" iyy="${femur_primitive_iyy}" iyz="0" izz="${femur_primitive_izz}"/>
+      </inertial>
+      <visual>
+        <origin rpy="${femur_primitive_rpy}" xyz="${femur_primitive_xyz}"/>
+        <geometry>
+          <cylinder radius="${femur_primitive_radius}" length="${femur_primitive_length}"/>
+        </geometry>
+        <material name="mat_femur_primitive"><color rgba="0.75 0.75 0.75 1"/></material>
+      </visual>
+      <collision>
+        <origin rpy="${femur_primitive_rpy}" xyz="${femur_primitive_xyz}"/>
+        <geometry>
+          <cylinder radius="${femur_primitive_radius}" length="${femur_primitive_length}"/>
+        </geometry>
+      </collision>
     </xacro:if>
-    <visual>
-      <origin rpy="${thigh_vis_rpy}" xyz="0 0 0"/>
-      <geometry>
-        <mesh filename="package://dog2_description/meshes/l${leg_num}11.STL"/>
-      </geometry>
-      <material name="mat_white"><color rgba="1 1 1 1"/></material>
-    </visual>
-    <collision>
-      <origin rpy="${thigh_col_rpy_eff}" xyz="0 0 0"/>
-      <geometry>
-        <mesh filename="package://dog2_description/meshes/collision/l${leg_num}11_collision.STL"/>
-      </geometry>
-    </collision>
+    <xacro:unless value="${use_primitive_links}">
+      <inertial>
+        <origin rpy="0 0 0" xyz="${thigh_xyz}"/>
+        <mass value="0.4"/>
+        <inertia ixx="${femur_ixx}" ixy="${femur_ixy}" ixz="${femur_ixz}" iyy="${femur_iyy}" iyz="${femur_iyz}" izz="${femur_izz}"/>
+      </inertial>
+      <!-- Femur mesh/collision-only rpy (not joint semantics). rf: CAD mesh flip via leg_thigh_mesh_flip_rpy. -->
+      <xacro:property name="thigh_vis_rpy" value="0 0 0"/>
+      <xacro:property name="thigh_col_rpy_eff" value="0 0 0"/>
+      <xacro:if value="${prefix == 'rf'}">
+        <xacro:property name="thigh_vis_rpy" value="${leg_thigh_mesh_flip_rpy}"/>
+        <xacro:property name="thigh_col_rpy_eff" value="${leg_thigh_mesh_flip_rpy}"/>
+      </xacro:if>
+      <visual>
+        <origin rpy="${thigh_vis_rpy}" xyz="0 0 0"/>
+        <geometry>
+          <mesh filename="${dog2_mesh_root}/l${leg_num}11.STL"/>
+        </geometry>
+        <material name="mat_white"><color rgba="1 1 1 1"/></material>
+      </visual>
+      <collision>
+        <origin rpy="${thigh_col_rpy_eff}" xyz="0 0 0"/>
+        <geometry>
+          <mesh filename="${dog2_collision_mesh_root}/l${leg_num}11_collision.STL"/>
+        </geometry>
+      </collision>
+    </xacro:unless>
   </link>
 
   <xacro:property name="femur_parent_link" value="${prefix}_coxa_link"/>
@@ -186,23 +215,45 @@
   </joint>
 
   <link name="${prefix}_tibia_link">
-    <inertial>
-      <origin rpy="0 0 0" xyz="${shin_xyz}"/>
-      <mass value="0.5"/>
-      <inertia ixx="0.004517" ixy="0.0000087" ixz="0.0000042" iyy="0.000975" iyz="-0.001769" izz="0.003666"/>
-    </inertial>
-    <visual>
-      <geometry>
-        <mesh filename="package://dog2_description/meshes/l${leg_num}111.STL"/>
-      </geometry>
-      <material name="mat_white"><color rgba="1 1 1 1"/></material>
-    </visual>
-    <!-- Collision is mesh STL (not a box/cylinder primitive). -->
-    <collision>
-      <geometry>
-        <mesh filename="package://dog2_description/meshes/collision/l${leg_num}111_collision.STL"/>
-      </geometry>
-    </collision>
+    <xacro:if value="${use_primitive_links}">
+      <inertial>
+        <origin rpy="${tibia_primitive_rpy}" xyz="${tibia_primitive_xyz}"/>
+        <mass value="0.5"/>
+        <inertia ixx="${tibia_primitive_ixx}" ixy="0" ixz="0" iyy="${tibia_primitive_iyy}" iyz="0" izz="${tibia_primitive_izz}"/>
+      </inertial>
+      <visual>
+        <origin rpy="${tibia_primitive_rpy}" xyz="${tibia_primitive_xyz}"/>
+        <geometry>
+          <cylinder radius="${tibia_primitive_radius}" length="${tibia_primitive_length}"/>
+        </geometry>
+        <material name="mat_tibia_primitive"><color rgba="0.7 0.7 0.7 1"/></material>
+      </visual>
+      <collision>
+        <origin rpy="${tibia_primitive_rpy}" xyz="${tibia_primitive_xyz}"/>
+        <geometry>
+          <cylinder radius="${tibia_primitive_radius}" length="${tibia_primitive_length}"/>
+        </geometry>
+      </collision>
+    </xacro:if>
+    <xacro:unless value="${use_primitive_links}">
+      <inertial>
+        <origin rpy="0 0 0" xyz="${shin_xyz}"/>
+        <mass value="0.5"/>
+        <inertia ixx="${tibia_ixx}" ixy="${tibia_ixy}" ixz="${tibia_ixz}" iyy="${tibia_iyy}" iyz="${tibia_iyz}" izz="${tibia_izz}"/>
+      </inertial>
+      <visual>
+        <geometry>
+          <mesh filename="${dog2_mesh_root}/l${leg_num}111.STL"/>
+        </geometry>
+        <material name="mat_white"><color rgba="1 1 1 1"/></material>
+      </visual>
+      <!-- Collision is mesh STL (not a box/cylinder primitive). -->
+      <collision>
+        <geometry>
+          <mesh filename="${dog2_collision_mesh_root}/l${leg_num}111_collision.STL"/>
+        </geometry>
+      </collision>
+    </xacro:unless>
   </link>
 
   <xacro:property name="tibia_parent_link" value="${prefix}_femur_link"/>
@@ -250,7 +301,7 @@
     <inertial>
       <origin rpy="0 0 0" xyz="0 0 0"/>
       <mass value="0.05"/>
-      <inertia ixx="2.88e-06" ixy="0" ixz="0" iyy="2.88e-06" iyz="0" izz="2.88e-06"/>
+      <inertia ixx="${foot_ixx}" ixy="0" ixz="0" iyy="${foot_iyy}" iyz="0" izz="${foot_izz}"/>
     </inertial>
     <visual>
       <origin rpy="0 0 0" xyz="0 0 0"/>
