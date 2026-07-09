@@ -13,6 +13,11 @@ find_package(sensor_msgs REQUIRED)
 find_package(nav_msgs REQUIRED)
 find_package(Eigen3 REQUIRED)
 find_package(dog2_dynamics REQUIRED)
+find_package(dog2_interfaces REQUIRED)
+# pinocchio >= 4.0: headers must come from the imported target, which also
+# carries the include/pinocchio/deprecated compat path used by dog2_dynamics.
+find_package(pinocchio REQUIRED)
+find_package(ament_index_cpp REQUIRED)
 
 # Find OSQP
 find_package(PkgConfig REQUIRED)
@@ -185,65 +190,9 @@ install(TARGETS
   RUNTIME DESTINATION bin
 )
 
-# MPC Node executable
-add_executable(mpc_node
-  src/mpc_node.cpp
-)
-target_include_directories(mpc_node PRIVATE
-  ${CMAKE_CURRENT_SOURCE_DIR}/include
-)
-target_link_libraries(mpc_node
-  mpc_controller
-  osqp_interface
-  srbd_model
-  sliding_constraints
-  boundary_constraints
-  crossing_state_machine
-  hybrid_gait_generator
-)
-ament_target_dependencies(mpc_node
-  rclcpp
-  nav_msgs
-  geometry_msgs
-  sensor_msgs
-  Eigen3
-)
-
-# 16D MPC Node executable
-add_executable(mpc_node_16d
-  src/mpc_node_16d.cpp
-)
-target_include_directories(mpc_node_16d PRIVATE
-  ${CMAKE_CURRENT_SOURCE_DIR}/include
-)
-target_link_libraries(mpc_node_16d
-  extended_srbd_model
-  mpc_controller
-  osqp_interface
-  srbd_model
-  sliding_constraints
-  boundary_constraints
-  crossing_state_machine
-  hybrid_gait_generator
-)
-ament_target_dependencies(mpc_node_16d
-  rclcpp
-  nav_msgs
-  geometry_msgs
-  sensor_msgs
-  std_msgs
-  Eigen3
-  dog2_dynamics
-)
-
 # Complete MPC Node executable (with trajectory generation and contact detection)
 add_executable(mpc_node_complete
   src/mpc_node_complete.cpp
-)
-
-# State Simulator executable (for testing without Gazebo)
-add_executable(state_simulator
-  src/state_simulator.cpp
 )
 target_include_directories(mpc_node_complete PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}/include
@@ -259,6 +208,7 @@ target_link_libraries(mpc_node_complete
   hybrid_gait_generator
   trajectory_generator
   contact_detector
+  pinocchio::pinocchio
 )
 ament_target_dependencies(mpc_node_complete
   rclcpp
@@ -268,19 +218,11 @@ ament_target_dependencies(mpc_node_complete
   std_msgs
   Eigen3
   dog2_dynamics
-)
-
-# State Simulator dependencies
-ament_target_dependencies(state_simulator
-  rclcpp
-  nav_msgs
-  geometry_msgs
-  sensor_msgs
-  Eigen3
+  dog2_interfaces
 )
 
 # Install executables
-install(TARGETS mpc_node mpc_node_16d mpc_node_complete state_simulator
+install(TARGETS mpc_node_complete
   DESTINATION lib/${PROJECT_NAME}
 )
 
@@ -518,6 +460,18 @@ if(BUILD_TESTING)
   find_package(ament_lint_auto REQUIRED)
   set(ament_cmake_copyright_FOUND TRUE)
   set(ament_cmake_cpplint_FOUND TRUE)
+  add_executable(test_mpc_urdf_model_data
+    test/test_mpc_urdf_model_data.cpp
+  )
+  target_link_libraries(test_mpc_urdf_model_data
+    pinocchio::pinocchio
+  )
+  ament_target_dependencies(test_mpc_urdf_model_data
+    Eigen3
+    dog2_dynamics
+    ament_index_cpp
+  )
+  add_test(NAME test_mpc_urdf_model_data COMMAND test_mpc_urdf_model_data)
   ament_lint_auto_find_test_dependencies()
 endif()
 

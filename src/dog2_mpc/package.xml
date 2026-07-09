@@ -18,6 +18,8 @@
   <depend>eigen</depend>
   <depend>osqp</depend>
   <depend>dog2_dynamics</depend>
+  <depend>dog2_interfaces</depend>
+  <depend>ament_index_cpp</depend>
 
   <exec_depend>dog2_description</exec_depend>
   <exec_depend>xacro</exec_depend>

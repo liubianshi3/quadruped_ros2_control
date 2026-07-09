@@ -1,32 +1,30 @@
 #!/usr/bin/env python3
 
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, OpaqueFunction
+from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, SetEnvironmentVariable
 from launch.launch_description_sources import PythonLaunchDescriptionSource
-from launch.substitutions import Command, LaunchConfiguration, PathJoinSubstitution
+from launch.substitutions import Command, LaunchConfiguration, PathJoinSubstitution, PythonExpression
 from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
 from launch_ros.substitutions import FindPackageShare
-
-from dog2_motion_control.model_variant import get_urdf_xacro_filename
 
 
 def generate_launch_description():
     use_sim_time = LaunchConfiguration("use_sim_time")
     mode = LaunchConfiguration("mode")
+    model_variant = LaunchConfiguration("model_variant")
+    software_rendering = LaunchConfiguration("software_rendering")
     control_param_file = PathJoinSubstitution(
         [FindPackageShare("dog2_mpc"), "config", "dog2_ctrl_params.yaml"]
     )
 
-    def _xacro_file(context):
-        variant = LaunchConfiguration("model_variant").perform(context).strip() or "real"
-        from dog2_motion_control.model_variant import normalize_model_variant
-        variant = normalize_model_variant(variant)
-        return PathJoinSubstitution(
-            [FindPackageShare("dog2_description"), "urdf", get_urdf_xacro_filename(variant)]
-        ).perform(context)
-
-    robot_description = ParameterValue(Command(["xacro ", _xacro_file]), value_type=str)
+    xacro_filename = PythonExpression([
+        "'dog2_symmetric.urdf.xacro' if '",
+        model_variant,
+        "' == 'symmetric' else 'dog2.urdf.xacro'",
+    ])
+    xacro_file = PathJoinSubstitution([FindPackageShare("dog2_description"), "urdf", xacro_filename])
+    robot_description = ParameterValue(Command(["xacro ", xacro_file]), value_type=str)
 
     gazebo_launch = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
@@ -66,14 +64,17 @@ def generate_launch_description():
         executable="wbc_node_complete",
         name="wbc_node_complete",
         output="screen",
-        parameters=[{"use_sim_time": use_sim_time}],
+        parameters=[{"use_sim_time": use_sim_time, "robot_description": robot_description}],
     )
 
     return LaunchDescription(
         [
             DeclareLaunchArgument("mode", default_value="hover"),
             DeclareLaunchArgument("use_sim_time", default_value="true"),
-            DeclareLaunchArgument("model_variant", default_value="real"),
+            DeclareLaunchArgument("model_variant", default_value="symmetric", choices=["real", "symmetric"]),
+            DeclareLaunchArgument("software_rendering", default_value="1", choices=["0", "1"]),
+            SetEnvironmentVariable("LIBGL_ALWAYS_SOFTWARE", software_rendering),
+            SetEnvironmentVariable("GAZEBO_MODEL_DATABASE_URI", ""),
             gazebo_launch,
             robot_state_publisher,
             spawn_entity,

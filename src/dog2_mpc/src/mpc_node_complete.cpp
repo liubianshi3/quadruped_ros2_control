@@ -10,6 +10,7 @@
 #include <std_msgs/msg/float64_multi_array.hpp>
 #include <std_msgs/msg/bool.hpp>
 #include <std_msgs/msg/string.hpp>
+#include <dog2_interfaces/msg/contact_phase.hpp>
 #include <Eigen/Dense>
 #include <Eigen/Geometry>
 #include <algorithm>
@@ -65,21 +66,74 @@ private:
         return std::max(lo, std::min(hi, v));
     }
 
+    // MPC leg order (lf,lh,rh,rf). Do NOT use Dog2Model::FOOT_NAMES here:
+    // that array is in rh,rf,lf,lh order.
+    static constexpr const char* kMpcFootFrames[4] = {
+        "lf_foot_link",
+        "lh_foot_link",
+        "rh_foot_link",
+        "rf_foot_link"
+    };
+
     Eigen::Vector4d rail_position_lower_;
     Eigen::Vector4d rail_position_upper_;
+    Eigen::Matrix3d body_inertia_ = Eigen::Matrix3d::Identity();
 
-    void loadRailLimitsFromRobotDescription() {
+    void loadRobotDescriptionDerivedModelInfo() {
         const std::string robot_description =
             this->get_parameter("robot_description").as_string();
 
         if (robot_description.empty()) {
             throw std::runtime_error(
-                "mpc_node_complete requires robot_description parameter to load rail limits from URDF");
+                "mpc_node_complete requires robot_description parameter to load model data from URDF");
         }
 
-        const auto dog2_model = dog2_dynamics::Dog2Model::fromUrdfXml(robot_description);
+        dog2_model_ = std::make_unique<dog2_dynamics::Dog2Model>(
+            dog2_dynamics::Dog2Model::fromUrdfXml(robot_description));
+        auto& dog2_model = *dog2_model_;
         rail_position_lower_ = dog2_model.slidingJointLowerLimits();
         rail_position_upper_ = dog2_model.slidingJointUpperLimits();
+        mass_ = dog2_model.mass();
+
+        const auto& pin_model = dog2_model.getModel();
+        if (!pin_model.existFrame("base_link")) {
+            throw std::runtime_error("URDF-derived Dog2Model is missing base_link frame");
+        }
+        const auto base_frame_id = pin_model.getFrameId("base_link");
+        body_inertia_ = pin_model.frames[base_frame_id].inertia.inertia().matrix();
+
+        // Nominal feet must be evaluated at the standing pose, not q=0:
+        // at q=0 the legs hang straight (z=-0.465, wrong x), which used to
+        // feed the SRBD QP a stance geometry 0.2 m away from reality.
+        const std::vector<double> stance_pose =
+            this->get_parameter("stance_joint_pose").as_double_array();
+        Eigen::VectorXd q_stance = Eigen::VectorXd::Zero(dog2_model.nq());
+        if (stance_pose.size() == 4) {
+            const auto& model = dog2_model.getModel();
+            static constexpr const char* kLegPrefixes[4] = {"lf", "lh", "rh", "rf"};
+            static constexpr const char* kJointSuffixes[4] = {
+                "rail_joint", "coxa_joint", "femur_joint", "tibia_joint"};
+            for (const char* prefix : kLegPrefixes) {
+                for (int j = 0; j < 4; ++j) {
+                    const std::string joint_name =
+                        std::string(prefix) + "_" + kJointSuffixes[j];
+                    if (model.existJointName(joint_name)) {
+                        const auto joint_id = model.getJointId(joint_name);
+                        q_stance(model.idx_qs[joint_id]) = stance_pose[j];
+                    }
+                }
+            }
+        }
+        base_foot_positions_ = Eigen::MatrixXd::Zero(4, 3);
+        for (int i = 0; i < 4; ++i) {
+            base_foot_positions_.row(i) =
+                dog2_model.footPosition(kMpcFootFrames[i], q_stance).transpose();
+        }
+        base_foot_positions_.rowwise() += com_offset_.transpose();
+        com_stance_ = dog2_model.centerOfMass(q_stance) + com_offset_;
+        RCLCPP_INFO(this->get_logger(),
+                    "Stance COM (base frame): [%.4f, %.4f, %.4f]",
+                    com_stance_(0), com_stance_(1), com_stance_(2));
 
         RCLCPP_INFO(this->get_logger(),
                     "Loaded rail limits from URDF: lower=[%.3f %.3f %.3f %.3f], upper=[%.3f %.3f %.3f %.3f]",
@@ -87,6 +141,49 @@ private:
                     rail_position_lower_(2), rail_position_lower_(3),
                     rail_position_upper_(0), rail_position_upper_(1),
                     rail_position_upper_(2), rail_position_upper_(3));
+        RCLCPP_INFO(this->get_logger(),
+                    "Loaded MPC model data from URDF: mass=%.3f kg, base_link inertia diag=[%.5f %.5f %.5f]",
+                    mass_, body_inertia_(0, 0), body_inertia_(1, 1), body_inertia_(2, 2));
+        RCLCPP_INFO(this->get_logger(),
+                    "Loaded URDF base feet (lf,lh,rh,rf) x=[%.3f %.3f %.3f %.3f] y=[%.3f %.3f %.3f %.3f] z=[%.3f %.3f %.3f %.3f]",
+                    base_foot_positions_(0, 0), base_foot_positions_(1, 0),
+                    base_foot_positions_(2, 0), base_foot_positions_(3, 0),
+                    base_foot_positions_(0, 1), base_foot_positions_(1, 1),
+                    base_foot_positions_(2, 1), base_foot_positions_(3, 1),
+                    base_foot_positions_(0, 2), base_foot_positions_(1, 2),
+                    base_foot_positions_(2, 2), base_foot_positions_(3, 2));
+
+        // q-index map for runtime FK (measured joints -> Pinocchio q).
+        // MPC leg order lf,lh,rh,rf; per-leg joint order rail,coxa,femur,tibia.
+        {
+            static constexpr const char* kFkLegPrefixes[4] = {"lf", "lh", "rh", "rf"};
+            static constexpr const char* kFkJointSuffixes[4] = {
+                "rail_joint", "coxa_joint", "femur_joint", "tibia_joint"};
+            runtime_fk_ready_ = true;
+            for (int leg = 0; leg < 4; ++leg) {
+                for (int j = 0; j < 4; ++j) {
+                    const std::string joint_name =
+                        std::string(kFkLegPrefixes[leg]) + "_" + kFkJointSuffixes[j];
+                    if (!pin_model.existJointName(joint_name)) {
+                        fk_q_index_[leg][j] = -1;
+                        runtime_fk_ready_ = false;
+                        continue;
+                    }
+                    fk_q_index_[leg][j] =
+                        pin_model.idx_qs[pin_model.getJointId(joint_name)];
+                }
+            }
+            if (!runtime_fk_ready_) {
+                RCLCPP_WARN(this->get_logger(),
+                            "Runtime FK disabled: URDF is missing expected leg joints; "
+                            "support shaping will keep using stance geometry.");
+            }
+        }
+        // Sane lever arms until the first joint state arrives.
+        for (int i = 0; i < 4; ++i) {
+            support_lever_arms_.row(i) =
+                base_foot_positions_.row(i) - com_stance_.transpose();
+        }
     }
 
     void initializeParameters() {
@@ -104,6 +201,10 @@ private:
         this->declare_parameter("crossing_transition_stable_time", 0.15);
         this->declare_parameter("default_stance_length", 0.40);
         this->declare_parameter("default_stance_width", 0.30);
+        // [rail, coxa, femur, tibia] applied to all four legs when deriving
+        // the nominal stance feet from the URDF.
+        this->declare_parameter("stance_joint_pose",
+                                std::vector<double>{0.0, 0.0, 1.05, -1.10});
         this->declare_parameter("nominal_body_height", 0.28);
         this->declare_parameter("com_offset_x", 0.0);
         this->declare_parameter("com_offset_y", 0.0);
@@ -127,6 +228,8 @@ private:
         this->declare_parameter("hover_force_max_leg_fz", 55.0);
         this->declare_parameter("hover_force_min_leg_fz", 18.0);
         this->declare_parameter("attitude_support_enabled", true);
+        this->declare_parameter("attitude_support_hover_enabled", true);
+        this->declare_parameter("attitude_support_hover_scale", 0.5);
         this->declare_parameter("attitude_support_roll_target", 0.0);
         this->declare_parameter("attitude_support_pitch_target", 0.0);
         this->declare_parameter("attitude_support_roll_kp", 90.0);
@@ -138,6 +241,21 @@ private:
         this->declare_parameter("crossing_forward_assist_force_per_leg", 14.0);
         this->declare_parameter("crossing_forward_assist_pre_approach_enabled", false);
         this->declare_parameter("crossing_force_full_support", true);
+        this->declare_parameter("flat_force_full_support", false);
+        this->declare_parameter("flat_forward_assist_enabled", false);
+        this->declare_parameter("flat_forward_assist_force_per_mps", 120.0);
+        this->declare_parameter("flat_forward_assist_max_force_per_leg", 18.0);
+        this->declare_parameter("flat_forward_assist_min_cmd", 0.02);
+        // Walking planar stabilization: closes vx/vy/yaw-rate loops through
+        // stance-foot tangential forces. Without it flat walking is open-loop
+        // (feed-forward push only) and the body veers/yaws freely.
+        this->declare_parameter("walking_stabilization_enabled", true);
+        this->declare_parameter("walking_vx_kp", 25.0);
+        this->declare_parameter("walking_vy_kp", 25.0);
+        this->declare_parameter("walking_wz_kp", 4.0);
+        this->declare_parameter("walking_fx_max_per_leg", 30.0);
+        this->declare_parameter("walking_fy_max_per_leg", 25.0);
+        this->declare_parameter("walking_yaw_moment_max", 8.0);
         this->declare_parameter("crossing_freeze_rail_targets", false);
         this->declare_parameter("bfs_rail_ramp_enabled", true);
         this->declare_parameter("bfs_rail_ramp_rate", 0.015);
@@ -191,13 +309,7 @@ private:
     }
     
     void initializeControllers() {
-        loadRailLimitsFromRobotDescription();
-
-        // 惯性张量
-        Eigen::Matrix3d inertia;
-        inertia << 0.0153, 0.00011, 0.0,
-                   0.00011, 0.052, 0.0,
-                   0.0, 0.0, 0.044;
+        loadRobotDescriptionDerivedModelInfo();
         
         // MPC参数
         MPCController::Parameters mpc_params;
@@ -219,7 +331,7 @@ private:
         mpc_params.u_max = Eigen::VectorXd::Constant(12, 100.0);
         
         // 创建控制器
-        mpc_controller_ = std::make_unique<MPCController>(mass_, inertia, mpc_params);
+        mpc_controller_ = std::make_unique<MPCController>(mass_, body_inertia_, mpc_params);
         mpc_controller_->setSlidingPositionLimits(rail_position_lower_, rail_position_upper_);
 
         // rail soft bound exact penalty 一次项权重（支持动态调参）
@@ -246,15 +358,7 @@ private:
         contact_detector_ = std::make_unique<ContactDetector>();
         gait_generator_ = std::make_unique<HybridGaitGenerator>();
         
-        // 设置基础足端位置（蜘蛛式站姿参数化）
-        const double half_length = 0.5 * stance_length_;
-        const double half_width = 0.5 * stance_width_;
-        base_foot_positions_ = Eigen::MatrixXd::Zero(4, 3);
-        base_foot_positions_ << -half_length, -half_width, -nominal_body_height_,
-                                 half_length, -half_width, -nominal_body_height_,
-                                 half_length,  half_width, -nominal_body_height_,
-                                -half_length,  half_width, -nominal_body_height_;
-        base_foot_positions_.rowwise() += com_offset_.transpose();
+        // 基础足端位置来自 robot_description / Dog2Model，顺序显式为 lf,lh,rh,rf。
         mpc_controller_->setBaseFootPositions(base_foot_positions_);
 
         RCLCPP_INFO(this->get_logger(),
@@ -289,6 +393,13 @@ private:
         enable_crossing_sub_ = this->create_subscription<std_msgs::msg::Bool>(
             "/enable_crossing", 10,
             std::bind(&MPCNodeComplete::enableCrossingCallback, this, std::placeholders::_1));
+
+        // Contact schedule comes from the gait scheduler so MPC, WBC and the
+        // swing generator share one phase clock. The internal phase clock is
+        // only a fallback while this stream is stale.
+        contact_phase_sub_ = this->create_subscription<dog2_interfaces::msg::ContactPhase>(
+            "/dog2/gait/contact_phase", 10,
+            std::bind(&MPCNodeComplete::contactPhaseCallback, this, std::placeholders::_1));
         
         // 发布
         foot_force_pub_ = this->create_publisher<std_msgs::msg::Float64MultiArray>(
@@ -463,6 +574,41 @@ private:
         return sanitized;
     }
     
+    static int legIdFromShortName(const std::string& name) {
+        // Gait scheduler publishes bare leg names ("lf"), while joint-state
+        // parsing expects prefixed names ("lf_..."); accept both.
+        if (name == "lf") return 0;
+        if (name == "lh") return 1;
+        if (name == "rh") return 2;
+        if (name == "rf") return 3;
+        return -1;
+    }
+
+    void contactPhaseCallback(const dog2_interfaces::msg::ContactPhase::SharedPtr msg) {
+        const size_t count = std::min(msg->leg_names.size(), msg->phase.size());
+        for (size_t i = 0; i < count; ++i) {
+            int leg = legIdFromShortName(msg->leg_names[i]);
+            if (leg < 0) {
+                leg = getLegIdFromName(msg->leg_names[i]);
+            }
+            if (leg >= 0) {
+                gait_contact_mask_[leg] =
+                    msg->phase[i] != dog2_interfaces::msg::ContactPhase::SWING;
+            }
+        }
+        gait_mask_stamp_ = this->get_clock()->now();
+        gait_mask_received_ = true;
+    }
+
+    bool gaitMaskFresh() {
+        if (!gait_mask_received_) {
+            return false;
+        }
+        const double age =
+            (this->get_clock()->now() - gait_mask_stamp_).seconds();
+        return age >= 0.0 && age < 0.3;
+    }
+
     void cmdVelCallback(const geometry_msgs::msg::Twist::SharedPtr msg) {
         velocity_cmd_(0) = msg->linear.x;
         velocity_cmd_(1) = msg->linear.y;
@@ -529,6 +675,7 @@ private:
         mpc_controller_->setSlackLinearWeight(
             this->get_parameter("slack_linear_weight").as_double());
         refreshVerticalSupportParameters();
+        updateSupportGeometry();
         
         // 构建16维扩展状态
         Eigen::VectorXd extended_state(16);
@@ -628,6 +775,11 @@ private:
                                  crossing_pre_approach);
             applyCrossingForwardAssist(u_optimal, contact_state, use_gait_contact_mask,
                                        crossing_pre_approach);
+            applyFlatForwardAssist(u_optimal, contact_state, use_gait_contact_mask,
+                                   crossing_pre_approach);
+            applyWalkingPlanarStabilization(u_optimal, contact_state,
+                                            use_gait_contact_mask,
+                                            crossing_pre_approach);
             applyHoverForceSanitizer(u_optimal);
             publishCrossingState();
             publishFootForces(u_optimal);
@@ -639,13 +791,36 @@ private:
         if (use_gait_contact_mask) {
             zeroSwingLegForces(u_optimal, contact_state);
         }
+        const Eigen::VectorXd u_qp_snapshot = u_optimal;
         applyVerticalSupport(u_optimal, contact_state, use_gait_contact_mask,
                              crossing_pre_approach);
         applyAttitudeSupport(u_optimal, contact_state, use_gait_contact_mask,
                              crossing_pre_approach);
         applyCrossingForwardAssist(u_optimal, contact_state, use_gait_contact_mask,
                                    crossing_pre_approach);
+        applyFlatForwardAssist(u_optimal, contact_state, use_gait_contact_mask,
+                               crossing_pre_approach);
+        applyWalkingPlanarStabilization(u_optimal, contact_state,
+                                        use_gait_contact_mask,
+                                        crossing_pre_approach);
         applyHoverForceSanitizer(u_optimal);
+        if (current_mode_ == TrajectoryGenerator::Mode::WALKING) {
+            // Per-leg planar force breakdown: QP raw vs after shapers, to
+            // attribute the walking lurch (QP planar output vs velocity
+            // stabilization shares).
+            RCLCPP_INFO_THROTTLE(
+                this->get_logger(), *this->get_clock(), 500,
+                "[walk_fx] qp=[%.1f %.1f %.1f %.1f] out=[%.1f %.1f %.1f %.1f] "
+                "qp_fy=[%.1f %.1f %.1f %.1f] out_fy=[%.1f %.1f %.1f %.1f] mask=[%d%d%d%d]",
+                u_qp_snapshot(0), u_qp_snapshot(3), u_qp_snapshot(6), u_qp_snapshot(9),
+                u_optimal(0), u_optimal(3), u_optimal(6), u_optimal(9),
+                u_qp_snapshot(1), u_qp_snapshot(4), u_qp_snapshot(7), u_qp_snapshot(10),
+                u_optimal(1), u_optimal(4), u_optimal(7), u_optimal(10),
+                contact_state.in_contact[0] ? 1 : 0,
+                contact_state.in_contact[1] ? 1 : 0,
+                contact_state.in_contact[2] ? 1 : 0,
+                contact_state.in_contact[3] ? 1 : 0);
+        }
         
         // 发布足端力
         publishFootForces(u_optimal);
@@ -706,8 +881,11 @@ private:
             this->get_parameter("vertical_support_kp").as_double();
         vertical_support_kd_ =
             this->get_parameter("vertical_support_kd").as_double();
+        // No 1.0 floor here: values below 1.0 are the whole point -- the
+        // height regulator must be able to command less than body weight
+        // to decelerate an ascent (see applyVerticalSupport).
         vertical_support_min_total_force_multiplier_ =
-            std::max(1.0, this->get_parameter("vertical_support_min_total_force_multiplier").as_double());
+            std::max(0.0, this->get_parameter("vertical_support_min_total_force_multiplier").as_double());
         vertical_support_max_leg_force_ =
             std::max(0.0, this->get_parameter("vertical_support_max_leg_force").as_double());
         vertical_support_height_error_limit_ =
@@ -723,6 +901,11 @@ private:
                 hover_force_max_leg_fz_);
         attitude_support_enabled_ =
             this->get_parameter("attitude_support_enabled").as_bool();
+        attitude_support_hover_enabled_ =
+            this->get_parameter("attitude_support_hover_enabled").as_bool();
+        attitude_support_hover_scale_ = clampDouble(
+            this->get_parameter("attitude_support_hover_scale").as_double(),
+            0.0, 1.0);
         attitude_support_roll_target_ =
             this->get_parameter("attitude_support_roll_target").as_double();
         attitude_support_pitch_target_ =
@@ -745,6 +928,30 @@ private:
             this->get_parameter("crossing_forward_assist_pre_approach_enabled").as_bool();
         crossing_force_full_support_ =
             this->get_parameter("crossing_force_full_support").as_bool();
+        flat_force_full_support_ =
+            this->get_parameter("flat_force_full_support").as_bool();
+        flat_forward_assist_enabled_ =
+            this->get_parameter("flat_forward_assist_enabled").as_bool();
+        flat_forward_assist_force_per_mps_ =
+            std::max(0.0, this->get_parameter("flat_forward_assist_force_per_mps").as_double());
+        flat_forward_assist_max_force_per_leg_ =
+            std::max(0.0, this->get_parameter("flat_forward_assist_max_force_per_leg").as_double());
+        flat_forward_assist_min_cmd_ =
+            std::max(0.0, this->get_parameter("flat_forward_assist_min_cmd").as_double());
+        walking_stabilization_enabled_ =
+            this->get_parameter("walking_stabilization_enabled").as_bool();
+        walking_vx_kp_ =
+            std::max(0.0, this->get_parameter("walking_vx_kp").as_double());
+        walking_vy_kp_ =
+            std::max(0.0, this->get_parameter("walking_vy_kp").as_double());
+        walking_wz_kp_ =
+            std::max(0.0, this->get_parameter("walking_wz_kp").as_double());
+        walking_fx_max_per_leg_ =
+            std::max(0.0, this->get_parameter("walking_fx_max_per_leg").as_double());
+        walking_fy_max_per_leg_ =
+            std::max(0.0, this->get_parameter("walking_fy_max_per_leg").as_double());
+        walking_yaw_moment_max_ =
+            std::max(0.0, this->get_parameter("walking_yaw_moment_max").as_double());
         crossing_freeze_rail_targets_ =
             this->get_parameter("crossing_freeze_rail_targets").as_bool();
         bfs_rail_ramp_enabled_ =
@@ -775,6 +982,61 @@ private:
                 last_bfs_rail_ramp_scale_,
                 bfs_rail_ramp_rate_);
         }
+    }
+
+    // Lever arms for the support force shapers (vertical split, attitude
+    // deltas, yaw-moment fx split): measured-FK feet relative to the
+    // measured-FK COM, rotated into world axes.
+    //
+    // The old code took the constant stance geometry (base_foot_positions_ /
+    // com_stance_) as moment arms. During stand-up the measured feet sit
+    // >10 cm away from the stance feet (deep crouch), and at tilt ~0.24 rad
+    // the base-frame z offset of the feet leaks ~sin(tilt)*0.15 m into the
+    // world-horizontal lever. Both errors made the moment balance
+    // systematically wrong and kept pumping the settle limit cycle
+    // (run20-26). Falls back to stance geometry until joints arrive.
+    void updateSupportGeometry() {
+        Eigen::Matrix3d R_wb = Eigen::Matrix3d::Identity();
+        if (current_body_q_valid_ && current_body_q_wb_.norm() > 1e-6) {
+            R_wb = current_body_q_wb_.normalized().toRotationMatrix();
+        }
+
+        support_geometry_from_fk_ = false;
+        if (dog2_model_ && runtime_fk_ready_ &&
+            joint_received_ && measured_leg_configs_valid_) {
+            Eigen::VectorXd q = Eigen::VectorXd::Zero(dog2_model_->nq());
+            for (int leg = 0; leg < 4; ++leg) {
+                q(fk_q_index_[leg][0]) = current_sliding_positions_(leg);
+                q(fk_q_index_[leg][1]) = current_joint_angles_[leg](0);
+                q(fk_q_index_[leg][2]) = current_joint_angles_[leg](1);
+                q(fk_q_index_[leg][3]) = current_joint_angles_[leg](2);
+            }
+            const Eigen::Vector3d com_b = dog2_model_->centerOfMass(q);
+            for (int i = 0; i < 4; ++i) {
+                const Eigen::Vector3d foot_b =
+                    dog2_model_->footPosition(kMpcFootFrames[i], q);
+                support_lever_arms_.row(i) =
+                    (R_wb * (foot_b - com_b)).transpose();
+            }
+            support_geometry_from_fk_ = true;
+        } else {
+            for (int i = 0; i < 4; ++i) {
+                const Eigen::Vector3d d_b =
+                    base_foot_positions_.row(i).transpose() - com_stance_;
+                support_lever_arms_.row(i) = (R_wb * d_b).transpose();
+            }
+        }
+
+        RCLCPP_DEBUG_THROTTLE(
+            this->get_logger(),
+            *this->get_clock(),
+            1000,
+            "[support_geom] src=%s lever_x=[%.3f %.3f %.3f %.3f] lever_y=[%.3f %.3f %.3f %.3f]",
+            support_geometry_from_fk_ ? "fk" : "stance",
+            support_lever_arms_(0, 0), support_lever_arms_(1, 0),
+            support_lever_arms_(2, 0), support_lever_arms_(3, 0),
+            support_lever_arms_(0, 1), support_lever_arms_(1, 1),
+            support_lever_arms_(2, 1), support_lever_arms_(3, 1));
     }
 
     LevelAttitudeError computeLevelAttitudeErrorFromQuat(
@@ -916,19 +1178,59 @@ private:
                stage == CrossingStateMachine::CrossingState::BODY_FORWARD_SHIFT;
     }
 
+    // Attitude (roll/pitch) support through fz differentials, for phases
+    // where stance forces carry the body: flat walking, crossing staging,
+    // and (since the crouch-handoff stand-up) HOVER as well. HOVER used to
+    // rely solely on the WBC posture PD, which is joint-space and blind to
+    // trunk attitude - a pitched quiet stand got zero corrective action
+    // (run15-17: att_dz stayed [0,0,0,0] throughout). HOVER uses a scaled
+    // gain (attitude_support_hover_scale) so quiet standing does not grind
+    // the feet against friction.
+    bool isSupportStabilizationActive(bool crossing_pre_approach) const {
+        if (current_mode_ == TrajectoryGenerator::Mode::WALKING) {
+            return true;
+        }
+        if (attitude_support_hover_enabled_ &&
+            current_mode_ == TrajectoryGenerator::Mode::HOVER) {
+            return true;
+        }
+        return isCrossingSupportStabilizationActive(crossing_pre_approach);
+    }
+
+    double attitudeSupportGainScale() const {
+        if (current_mode_ == TrajectoryGenerator::Mode::HOVER) {
+            return attitude_support_hover_scale_;
+        }
+        return 1.0;
+    }
+
     ContactDetector::ContactState computeCommandContactState(bool crossing_pre_approach) {
         ContactDetector::ContactState contact_state;
         if (current_mode_ == TrajectoryGenerator::Mode::WALKING || crossing_pre_approach) {
-            std::array<double, 4> gait_phases;
-            for (int i = 0; i < 4; ++i) {
-                gait_phases[i] = gait_phase_ + (i % 2) * 0.5;
-                if (gait_phases[i] >= 1.0) gait_phases[i] -= 1.0;
+            if (gaitMaskFresh()) {
+                // Same clock as WBC/swing generator: the WBC only realizes
+                // stance forces on these legs, so force budgeting must use
+                // this mask or the vertical support total comes out short.
+                for (int i = 0; i < 4; ++i) {
+                    contact_state.in_contact[i] = gait_contact_mask_[i];
+                }
+            } else {
+                std::array<double, 4> gait_phases;
+                for (int i = 0; i < 4; ++i) {
+                    gait_phases[i] = gait_phase_ + (i % 2) * 0.5;
+                    if (gait_phases[i] >= 1.0) gait_phases[i] -= 1.0;
+                }
+                contact_state = contact_detector_->detectFromGait(gait_phases);
             }
-            contact_state = contact_detector_->detectFromGait(gait_phases);
         }
 
         if (crossing_force_full_support_ &&
             isCrossingSupportStabilizationActive(crossing_pre_approach)) {
+            contact_state.in_contact.fill(true);
+        }
+        if (flat_force_full_support_ &&
+            current_mode_ == TrajectoryGenerator::Mode::WALKING &&
+            !crossing_pre_approach) {
             contact_state.in_contact.fill(true);
         }
 
@@ -1003,19 +1305,26 @@ private:
         const double height_error = std::max(
             -vertical_support_height_error_limit_,
             std::min(raw_height_error, vertical_support_height_error_limit_));
-        const double downward_velocity = -std::min(0.0, current_srbd_state_(8));
+        const double vertical_velocity = current_srbd_state_(8);
         const double gravity_force = mass_ * 9.81;
+        // Symmetric height regulation. The old one-sided law
+        // (mg + kp*max(0,err) + kd*max(0,-vz)) could only ever ADD force:
+        // above target and rising it output exactly mg, cancelling gravity,
+        // so the trunk coasted up until the feet unloaded, fell back,
+        // rang the contacts, and got launched again (run28/29 hop cycle).
+        // A regulator must also ease below mg to decelerate ascent; the
+        // min-total floor below keeps the feet from unloading completely.
         const double support_force =
             gravity_force +
-            vertical_support_kp_ * std::max(0.0, height_error) +
-            vertical_support_kd_ * downward_velocity;
+            vertical_support_kp_ * height_error -
+            vertical_support_kd_ * vertical_velocity;
         const double min_total_force =
             gravity_force * vertical_support_min_total_force_multiplier_;
         const double target_total_force =
             std::max(min_total_force, support_force);
         const double stabilization_headroom =
             (attitude_support_enabled_ &&
-             isCrossingSupportStabilizationActive(crossing_pre_approach))
+             isSupportStabilizationActive(crossing_pre_approach))
                 ? std::min(attitude_support_max_leg_delta_,
                            vertical_support_max_leg_force_)
                 : 0.0;
@@ -1025,13 +1334,93 @@ private:
             std::min(vertical_force_ceiling,
                      target_total_force / static_cast<double>(support_count));
 
+        // Static-equilibrium distribution: the COM does not sit at the
+        // centroid of the support feet, so an equal split permanently
+        // misloads one pair and pitches the trunk. Solve the minimum-
+        // deviation force set that keeps the total and zeroes the planar
+        // moments about the COM. Lever arms come from updateSupportGeometry
+        // (measured FK, world axes), so the balance stays correct in a deep
+        // crouch and under body tilt, not just at the nominal stance.
+        std::array<double, 4> fz_dist{};
+        {
+            const double total =
+                std::min(target_total_force,
+                         vertical_force_ceiling * support_count);
+            const double base = total / static_cast<double>(support_count);
+            double sxx = 1e-4, sxy = 0.0, syy = 1e-4, sx = 0.0, sy = 0.0;
+            for (int i = 0; i < 4; ++i) {
+                if (!support_legs[i]) {
+                    continue;
+                }
+                const double dx = support_lever_arms_(i, 0);
+                const double dy = support_lever_arms_(i, 1);
+                sxx += dx * dx;
+                sxy += dx * dy;
+                syy += dy * dy;
+                sx += dx;
+                sy += dy;
+            }
+            // Minimize sum (fz_i - base)^2 subject to BOTH zero planar
+            // moments AND the total force. fz_i = base + l0 + l1*dx + l2*dy
+            // needs all three multipliers: with only l1/l2 the total picks
+            // up an l1*sx + l2*sy error whenever the foot centroid is not
+            // at the COM. At the deep crouch sx = -0.29 m and the solve
+            // silently delivered 75-80% of body weight (run31: fz 88 N vs
+            // mg 118 N, the trunk sank to belly rest and stayed there).
+            const double n = static_cast<double>(support_count);
+            Eigen::Matrix3d A;
+            A << n,  sx,  sy,
+                 sx, sxx, sxy,
+                 sy, sxy, syy;
+            Eigen::Vector3d b(0.0, -base * sx, -base * sy);
+            Eigen::Vector3d lambda = Eigen::Vector3d::Zero();
+            if (std::abs(A.determinant()) > 1e-9) {
+                lambda = A.ldlt().solve(b);
+            }
+            double dist_sum = 0.0;
+            for (int i = 0; i < 4; ++i) {
+                if (!support_legs[i]) {
+                    continue;
+                }
+                const double dx = support_lever_arms_(i, 0);
+                const double dy = support_lever_arms_(i, 1);
+                fz_dist[i] = clampDouble(
+                    base + lambda(0) + lambda(1) * dx + lambda(2) * dy,
+                    0.0, vertical_force_ceiling);
+                dist_sum += fz_dist[i];
+            }
+            // One rescale pass: clamping individual legs must not silently
+            // shrink the supported weight.
+            if (dist_sum > 1e-6 && dist_sum < total) {
+                const double scale =
+                    std::min(total / dist_sum,
+                             vertical_force_ceiling * n /
+                                 std::max(dist_sum, 1e-6));
+                for (int i = 0; i < 4; ++i) {
+                    if (support_legs[i]) {
+                        fz_dist[i] = std::min(fz_dist[i] * scale,
+                                              vertical_force_ceiling);
+                    }
+                }
+            }
+        }
+
         for (int i = 0; i < 4; ++i) {
             if (!support_legs[i]) {
                 continue;
             }
 
             const int z_index = i * 3 + 2;
-            foot_forces(z_index) = std::max(foot_forces(z_index), per_leg_force);
+            if (current_mode_ == TrajectoryGenerator::Mode::WALKING ||
+                current_mode_ == TrajectoryGenerator::Mode::HOVER) {
+                // The height PD owns the z channel in flat modes. Merging the
+                // QP output through max() let the saturated QP (u_max) push
+                // 1.6x body weight into the ground permanently, which pogo-
+                // bounced the trunk instead of regulating height.
+                foot_forces(z_index) = fz_dist[i];
+            } else {
+                foot_forces(z_index) = std::max(foot_forces(z_index), per_leg_force);
+            }
         }
     }
 
@@ -1064,7 +1453,7 @@ private:
         if (!attitude_support_enabled_ ||
             foot_forces.size() < 12 ||
             current_srbd_state_.size() < 12 ||
-            !isCrossingSupportStabilizationActive(crossing_pre_approach)) {
+            !isSupportStabilizationActive(crossing_pre_approach)) {
             return;
         }
 
@@ -1104,16 +1493,19 @@ private:
         last_roll_error_ = attitude_support_roll_target_ - level_err.roll_like;
         last_pitch_error_ = attitude_support_pitch_target_ - level_err.pitch_like;
 
-        double tau_roll =
-            attitude_support_roll_kp_ * last_roll_error_ -
-            attitude_support_roll_kd_ * roll_rate;
-        double tau_pitch =
-            attitude_support_pitch_kp_ * last_pitch_error_ -
-            attitude_support_pitch_kd_ * pitch_rate;
+        const double gain_scale = attitudeSupportGainScale();
+        double tau_roll = gain_scale *
+            (attitude_support_roll_kp_ * last_roll_error_ -
+             attitude_support_roll_kd_ * roll_rate);
+        double tau_pitch = gain_scale *
+            (attitude_support_pitch_kp_ * last_pitch_error_ -
+             attitude_support_pitch_kd_ * pitch_rate);
         tau_roll = clampDouble(tau_roll, -40.0, 40.0);
         tau_pitch = clampDouble(tau_pitch, -45.0, 45.0);
 
-        Eigen::MatrixXd foot_rel = base_foot_positions_;
+        // COM-relative, world-axis lever arms from the measured FK
+        // (stance-geometry fallback until joints arrive).
+        const Eigen::MatrixXd& foot_rel = support_lever_arms_;
 
         double denom_y = 1e-6;
         double denom_x = 1e-6;
@@ -1248,6 +1640,185 @@ private:
             foot_forces(x_index) = std::max(foot_forces(x_index),
                                             crossing_forward_assist_force_per_leg_);
         }
+    }
+
+    void applyFlatForwardAssist(Eigen::VectorXd& foot_forces,
+                                const ContactDetector::ContactState& contact_state,
+                                bool use_contact_mask,
+                                bool crossing_pre_approach) {
+        if (!flat_forward_assist_enabled_ ||
+            foot_forces.size() < 12 ||
+            current_mode_ != TrajectoryGenerator::Mode::WALKING ||
+            crossing_pre_approach ||
+            std::abs(velocity_cmd_(0)) < flat_forward_assist_min_cmd_) {
+            return;
+        }
+
+        const LevelAttitudeError level_err =
+            current_body_q_valid_
+                ? computeLevelAttitudeErrorFromQuat(current_body_q_wb_)
+                : LevelAttitudeError{};
+        if (!level_err.valid ||
+            std::abs(level_err.roll_like) > 0.35 ||
+            std::abs(level_err.pitch_like) > 0.35 ||
+            level_err.tilt > 0.48 ||
+            level_err.body_up_z < 0.82 ||
+            level_err.inverted) {
+            RCLCPP_WARN_THROTTLE(
+                this->get_logger(),
+                *this->get_clock(),
+                1000,
+                "Flat forward assist gated by attitude: valid=%d roll=%.3f pitch=%.3f tilt=%.3f up_z=%.3f",
+                level_err.valid ? 1 : 0,
+                level_err.roll_like,
+                level_err.pitch_like,
+                level_err.tilt,
+                level_err.body_up_z);
+            return;
+        }
+
+        std::array<bool, 4> support_legs{};
+        int support_count = 0;
+        for (int i = 0; i < 4; ++i) {
+            support_legs[i] = !use_contact_mask || contact_state.in_contact[i];
+            if (support_legs[i]) {
+                ++support_count;
+            }
+        }
+        if (support_count < 2) {
+            support_legs.fill(true);
+        }
+
+        const double assist_force =
+            clampDouble(velocity_cmd_(0) * flat_forward_assist_force_per_mps_,
+                        -flat_forward_assist_max_force_per_leg_,
+                        flat_forward_assist_max_force_per_leg_);
+        for (int i = 0; i < 4; ++i) {
+            if (!support_legs[i]) {
+                continue;
+            }
+            const int x_index = i * 3;
+            if (assist_force >= 0.0) {
+                foot_forces(x_index) = std::max(foot_forces(x_index), assist_force);
+            } else {
+                foot_forces(x_index) = std::min(foot_forces(x_index), assist_force);
+            }
+        }
+    }
+
+    // Close the planar loops (vx, vy, yaw rate) through stance-foot
+    // tangential forces. Longitudinal/lateral velocity errors map to equal
+    // fx/fy shares; the yaw-rate error maps to a differential fx between the
+    // left and right stance feet. Runs in WALKING only; HOVER keeps the
+    // conservative sanitizer and CROSSING keeps its dedicated assists.
+    void applyWalkingPlanarStabilization(Eigen::VectorXd& foot_forces,
+                                         const ContactDetector::ContactState& contact_state,
+                                         bool use_contact_mask,
+                                         bool crossing_pre_approach) {
+        if (!walking_stabilization_enabled_ ||
+            foot_forces.size() < 12 ||
+            current_srbd_state_.size() < 12 ||
+            current_mode_ != TrajectoryGenerator::Mode::WALKING ||
+            crossing_pre_approach) {
+            return;
+        }
+
+        const LevelAttitudeError level_err =
+            current_body_q_valid_
+                ? computeLevelAttitudeErrorFromQuat(current_body_q_wb_)
+                : LevelAttitudeError{};
+        if (!level_err.valid || level_err.inverted ||
+            level_err.tilt > 0.48 || level_err.body_up_z < 0.82) {
+            return;
+        }
+
+        std::array<bool, 4> support_legs{};
+        int support_count = 0;
+        for (int i = 0; i < 4; ++i) {
+            support_legs[i] = !use_contact_mask || contact_state.in_contact[i];
+            if (support_legs[i]) {
+                ++support_count;
+            }
+        }
+        if (support_count < 2) {
+            support_legs.fill(true);
+            support_count = 4;
+        }
+
+        // Velocity commands and measurements are in the odom/world frame for
+        // vx/vy at small yaw; rotate the world-frame velocity error into the
+        // body frame using the current yaw so the force channels stay aligned
+        // with the feet when the body has turned.
+        const double yaw = current_srbd_state_(5);
+        const double cy = std::cos(yaw);
+        const double sy = std::sin(yaw);
+        const double vx_world = current_srbd_state_(6);
+        const double vy_world = current_srbd_state_(7);
+        const double vx_body = cy * vx_world + sy * vy_world;
+        const double vy_body = -sy * vx_world + cy * vy_world;
+
+        const double fx_total = clampDouble(
+            walking_vx_kp_ * (velocity_cmd_(0) - vx_body),
+            -walking_fx_max_per_leg_ * support_count,
+            walking_fx_max_per_leg_ * support_count);
+        const double fy_total = clampDouble(
+            walking_vy_kp_ * (velocity_cmd_(1) - vy_body),
+            -walking_fy_max_per_leg_ * support_count,
+            walking_fy_max_per_leg_ * support_count);
+
+        const double wz = current_srbd_state_(11);
+        const double yaw_moment = clampDouble(
+            walking_wz_kp_ * (velocity_cmd_(2) - wz),
+            -walking_yaw_moment_max_,
+            walking_yaw_moment_max_);
+
+        double denom_y = 1e-6;
+        for (int i = 0; i < 4; ++i) {
+            if (support_legs[i]) {
+                denom_y += support_lever_arms_(i, 1) * support_lever_arms_(i, 1);
+            }
+        }
+
+        // fx/fy_total are BODY-frame corrections (from body-frame velocity
+        // errors) but foot_forces is a WORLD-frame vector (the WBC rotates
+        // it by R_wb^T). Writing them in unrotated used to be harmless only
+        // at yaw~0: once yaw drifted, the "forward" correction pushed in a
+        // wrong world direction, exciting more lateral error and more yaw --
+        // the careening spiral of run32/33 (forward ended at yaw=-2.98 with
+        // projected 0.02-0.56 m out of 1.0-1.6 m planar). Rotate the shares
+        // to world axes; the yaw-moment differential already uses world
+        // levers and world fx, so it stays as is.
+        const double fx_share_b = fx_total / support_count;
+        const double fy_share_b = fy_total / support_count;
+        const double fx_share_w = cy * fx_share_b - sy * fy_share_b;
+        const double fy_share_w = sy * fx_share_b + cy * fy_share_b;
+        for (int i = 0; i < 4; ++i) {
+            if (!support_legs[i]) {
+                continue;
+            }
+            const int x_index = i * 3;
+            const int y_index = i * 3 + 1;
+            // Mz = sum(-y_i * fx_i): +Mz needs +fx on the left (y<0) feet.
+            const double dfx_yaw =
+                -yaw_moment * support_lever_arms_(i, 1) / denom_y;
+            foot_forces(x_index) = clampDouble(
+                foot_forces(x_index) + fx_share_w + dfx_yaw,
+                -walking_fx_max_per_leg_, walking_fx_max_per_leg_);
+            foot_forces(y_index) = clampDouble(
+                foot_forces(y_index) + fy_share_w,
+                -walking_fy_max_per_leg_, walking_fy_max_per_leg_);
+        }
+
+        RCLCPP_INFO_THROTTLE(
+            this->get_logger(),
+            *this->get_clock(),
+            500,
+            "[walk_stab] vx=%.3f/%.3f vy=%.3f/%.3f wz=%.3f/%.3f yaw=%.2f fx=%.1f fy=%.1f mz=%.2f n=%d",
+            vx_body, velocity_cmd_(0),
+            vy_body, velocity_cmd_(1),
+            wz, velocity_cmd_(2),
+            yaw,
+            fx_total, fy_total, yaw_moment, support_count);
     }
 
     void publishFootForces(const Eigen::VectorXd& foot_forces) {
@@ -1399,6 +1970,8 @@ private:
     double hover_force_max_leg_fz_ = 55.0;
     double hover_force_min_leg_fz_ = 18.0;
     bool attitude_support_enabled_;
+    bool attitude_support_hover_enabled_ = true;
+    double attitude_support_hover_scale_ = 0.5;
     double attitude_support_roll_target_;
     double attitude_support_pitch_target_;
     double attitude_support_roll_kp_;
@@ -1410,6 +1983,18 @@ private:
     double crossing_forward_assist_force_per_leg_;
     bool crossing_forward_assist_pre_approach_enabled_ = false;
     bool crossing_force_full_support_ = false;
+    bool flat_force_full_support_ = false;
+    bool flat_forward_assist_enabled_ = false;
+    double flat_forward_assist_force_per_mps_ = 120.0;
+    double flat_forward_assist_max_force_per_leg_ = 18.0;
+    double flat_forward_assist_min_cmd_ = 0.02;
+    bool walking_stabilization_enabled_ = true;
+    double walking_vx_kp_ = 25.0;
+    double walking_vy_kp_ = 25.0;
+    double walking_wz_kp_ = 4.0;
+    double walking_fx_max_per_leg_ = 30.0;
+    double walking_fy_max_per_leg_ = 25.0;
+    double walking_yaw_moment_max_ = 8.0;
     bool crossing_freeze_rail_targets_ = false;
     bool bfs_rail_ramp_enabled_ = true;
     double bfs_rail_ramp_rate_ = 0.015;
@@ -1433,6 +2018,7 @@ private:
     rclcpp::Subscription<sensor_msgs::msg::JointState>::SharedPtr joint_sub_;
     rclcpp::Subscription<geometry_msgs::msg::Twist>::SharedPtr cmd_vel_sub_;
     rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr enable_crossing_sub_;
+    rclcpp::Subscription<dog2_interfaces::msg::ContactPhase>::SharedPtr contact_phase_sub_;
     rclcpp::Publisher<std_msgs::msg::Float64MultiArray>::SharedPtr foot_force_pub_;
     rclcpp::Publisher<std_msgs::msg::String>::SharedPtr crossing_state_pub_;
     rclcpp::TimerBase::SharedPtr timer_;
@@ -1445,6 +2031,13 @@ private:
     Eigen::Vector4d last_attitude_support_delta_ = Eigen::Vector4d::Zero();
     Eigen::Vector3d velocity_cmd_ = Eigen::Vector3d::Zero();
     Eigen::MatrixXd base_foot_positions_ = Eigen::MatrixXd::Zero(4, 3);
+    Eigen::Vector3d com_stance_ = Eigen::Vector3d::Zero();
+    // 实时 FK 支撑几何（见 updateSupportGeometry）
+    std::unique_ptr<dog2_dynamics::Dog2Model> dog2_model_;
+    std::array<std::array<int, 4>, 4> fk_q_index_{};
+    bool runtime_fk_ready_ = false;
+    Eigen::MatrixXd support_lever_arms_ = Eigen::MatrixXd::Zero(4, 3);
+    bool support_geometry_from_fk_ = false;
     Eigen::Quaterniond current_body_q_wb_{1.0, 0.0, 0.0, 0.0};
     bool odom_received_ = false;
     bool joint_received_ = false;
@@ -1469,6 +2062,9 @@ private:
     // 步态
     double gait_phase_ = 0.0;
     double gait_period_ = 0.8;  // Trot周期0.8秒
+    std::array<bool, 4> gait_contact_mask_{true, true, true, true};
+    rclcpp::Time gait_mask_stamp_;
+    bool gait_mask_received_ = false;
 };
 
 } // namespace dog2_mpc
