@@ -21,7 +21,6 @@ find_package(ament_index_cpp REQUIRED)
 include_directories(
   include
   ${EIGEN3_INCLUDE_DIRS}
-  ${pinocchio_INCLUDE_DIRS}
 )
 
 # 创建dog2_dynamics库
@@ -29,8 +28,10 @@ add_library(${PROJECT_NAME}
   src/dog2_model.cpp
 )
 
+# pinocchio >= 4.0 requires the imported target: it carries both the normal
+# include dir and the deprecated compat include dir (pinocchio/deprecated).
 target_link_libraries(${PROJECT_NAME}
-  ${pinocchio_LIBRARIES}
+  pinocchio::pinocchio
 )
 
 ament_target_dependencies(${PROJECT_NAME}
@@ -44,7 +45,7 @@ add_executable(test_dog2_model
 
 target_link_libraries(test_dog2_model
   ${PROJECT_NAME}
-  ${pinocchio_LIBRARIES}
+  pinocchio::pinocchio
 )
 
 ament_target_dependencies(test_dog2_model

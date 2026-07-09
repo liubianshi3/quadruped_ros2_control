@@ -165,6 +165,19 @@ public:
    */
   Eigen::VectorXd gravityVector(const Eigen::VectorXd & q);
 
+  /**
+   * @brief 计算指定重力方向下的重力项 g(q)
+   *
+   * 固定基座模型默认重力沿 base 系 -z。躯干一旦俯仰/横滚，真实重力在
+   * base 系中的方向随之旋转，调用方应传入 R_wb^T * (0,0,-9.81)。
+   * @param q 关节位置
+   * @param gravity_linear base 系下的重力加速度向量
+   * @return 重力项（nv维）
+   */
+  Eigen::VectorXd gravityVector(
+    const Eigen::VectorXd & q,
+    const Eigen::Vector3d & gravity_linear);
+
   // ========== 滑动副专用接口（Dog2特有）==========
 
   /**

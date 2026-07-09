@@ -88,7 +88,11 @@ void Dog2Model::cacheFrameIds()
 
 double Dog2Model::mass() const
 {
-  return pinocchio::computeTotalMass(model_);
+  double total_mass = 0.0;
+  for (const auto & inertia : model_.inertias) {
+    total_mass += inertia.mass();
+  }
+  return total_mass;
 }
 
 void Dog2Model::forwardKinematics(const Eigen::VectorXd & q)
@@ -113,7 +117,22 @@ void Dog2Model::forwardKinematics(
 
 Eigen::Vector3d Dog2Model::centerOfMass(const Eigen::VectorXd & q)
 {
-  return pinocchio::centerOfMass(model_, data_, q);
+  // pinocchio::centerOfMass only sweeps the articulated joints (1..N).
+  // In this fixed-base model the trunk is welded to the universe and its
+  // inertia lives in model_.inertias[0] -- half the robot mass. Skipping
+  // it put the reported COM ~5 cm too far toward the hind feet and made
+  // every consumer (MPC vertical force split, stance margins) allocate
+  // support forces backwards. Merge the root inertia explicitly.
+  const Eigen::Vector3d com_articulated = pinocchio::centerOfMass(model_, data_, q);
+  const auto & root_inertia = model_.inertias[0];
+  const double root_mass = root_inertia.mass();
+  if (root_mass <= 0.0) {
+    return com_articulated;
+  }
+  const double articulated_mass = pinocchio::computeTotalMass(model_);
+  const double total_mass = articulated_mass + root_mass;
+  return (articulated_mass * com_articulated + root_mass * root_inertia.lever()) /
+         total_mass;
 }
 
 Eigen::Vector3d Dog2Model::centerOfMassVelocity(
@@ -121,7 +140,14 @@ Eigen::Vector3d Dog2Model::centerOfMassVelocity(
   const Eigen::VectorXd & v)
 {
   pinocchio::centerOfMass(model_, data_, q, v);
-  return data_.vcom[0];
+  // The trunk (root inertia) is stationary in the base frame, so the
+  // articulated-COM velocity must be scaled by its mass share.
+  const double root_mass = model_.inertias[0].mass();
+  if (root_mass <= 0.0) {
+    return data_.vcom[0];
+  }
+  const double articulated_mass = pinocchio::computeTotalMass(model_);
+  return data_.vcom[0] * (articulated_mass / (articulated_mass + root_mass));
 }
 
 Eigen::Vector3d Dog2Model::footPosition(const std::string & foot_name, const Eigen::VectorXd & q)
@@ -160,7 +186,7 @@ Eigen::MatrixXd Dog2Model::footJacobian(const std::string & foot_name, const Eig
   auto frame_id = model_.getFrameId(foot_name);
   Eigen::MatrixXd J(6, model_.nv);
   J.setZero();
-  pinocchio::computeFrameJacobian(model_, data_, q, frame_id, pinocchio::WORLD, J);
+  pinocchio::computeFrameJacobian(model_, data_, q, frame_id, pinocchio::LOCAL_WORLD_ALIGNED, J);
   return J;
 }
 
@@ -189,6 +215,20 @@ Eigen::VectorXd Dog2Model::gravityVector(const Eigen::VectorXd & q)
   Eigen::VectorXd v = Eigen::VectorXd::Zero(model_.nv);
   Eigen::VectorXd a = Eigen::VectorXd::Zero(model_.nv);
   return pinocchio::rnea(model_, data_, q, v, a);
+}
+
+Eigen::VectorXd Dog2Model::gravityVector(
+  const Eigen::VectorXd & q,
+  const Eigen::Vector3d & gravity_linear)
+{
+  const auto saved_gravity = model_.gravity;
+  model_.gravity.linear(gravity_linear);
+  model_.gravity.angular(Eigen::Vector3d::Zero());
+  Eigen::VectorXd v = Eigen::VectorXd::Zero(model_.nv);
+  Eigen::VectorXd a = Eigen::VectorXd::Zero(model_.nv);
+  Eigen::VectorXd g = pinocchio::rnea(model_, data_, q, v, a);
+  model_.gravity = saved_gravity;
+  return g;
 }
 
 Dog2Model::SlidingJointState Dog2Model::getSlidingJointState(
