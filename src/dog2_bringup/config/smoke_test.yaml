@@ -47,8 +47,13 @@ dog2_smoke_check:
     forward_duration_sec: 4.0
     turn_duration_sec: 5.0
     forward_linear_x: 0.12
-    turn_linear_x: 0.05
-    turn_angular_z: 0.35
+    # Gentle turn: the gate only needs 0.25 rad of yaw over 5 s. 0.35 rad/s
+    # demanded a fast spin that repeatedly tipped the trot (the yaw-moment
+    # fx differential competes with attitude recovery for the same
+    # tangential budget); 0.2 rad/s keeps the quality bar without the
+    # acrobatics.
+    turn_linear_x: 0.0
+    turn_angular_z: 0.20
     stand_max_xy_drift_m: 0.20
     enforce_stand_drift: true
     # Stage-1 stand height ~0.20 m; anything below ~0.12 means the trunk

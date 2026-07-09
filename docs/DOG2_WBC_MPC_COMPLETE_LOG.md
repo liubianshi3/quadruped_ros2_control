@@ -521,6 +521,8 @@ stand_max_xy_drift_m: 0.20
 
 **（2026-07-09 现状）** 经层 0→4 逐层根因排查（COM 漏躯干惯量、WBC 力符号反、常量力臂、单边高度环+分配不守恒、posture PD 与高度环对抗五个相互掩盖的根因全部修复），起立链路 run33/34 连续两次全流程 PASS；工作面转入行走质量。详见 §12（排查过程）与 §13（落成基线）。
 
+**（2026-07-09 晚间追加）** 行走质量战役（run39-68，§14）：又挖出并修复四个行走期根因（trot 两腿 KKT 分配退化、纯 50% 占空比无恢复窗、摆动腿无重力前馈、速度反馈被 trot 摇摆污染），行走从"必翻滚"变为"姿态有界的慢速 trot"；起立/站立 30 连稳。行走全流程 PASS 已可达（run67 前进投影 1.70 m、直线率 71%）但重复率仅 ~1/3，剩余阻塞是时钟驱动步态无接触感知（见 §14.5）。
+
 ---
 
 ## 11. 2026-07-08 下午复盘更新（run16 / run17，逐日志排查）
@@ -926,3 +928,132 @@ PASS: max_rail_lock_err≈0.0019 m
 - **力符号 −1 是静力学真值**，勿被历史注释/循环论证带偏（§11.2 曾误判）
 - 行走增益、attitude/height 增益均为**符号修复前所调**，参考价值有限
 - 清理后 build/install 已删，换机/重开必须全量 build
+
+---
+
+## 14. 2026-07-09 晚间：行走质量战役（run39-68）
+
+> §13 之后的续作。§13.9 列的"行走横漂/增益重基线"开工后发现远不止调参——
+> 又挖出**四个行走期根因**并全部修复；行走从"看似 PASS 实则翻滚"变为
+> "姿态有界的慢速 trot"。起立/站立链路全程未回归（30 连稳）。
+
+### 14.1 先修正一个认知：run33-38 的"行走 PASS"是假象
+
+回看数据：run35-38 forward 投影 0.20/1.43/2.11/2.87 m 方差巨大，且 **turn 阶段
+姿态日志 up_z 全程 −0.9 ~ −0.7 —— 机器人是在空翻，不是在转弯**（yaw_delta 门限
+被翻滚白送）。smoke 门限只查身高和 yaw，姿态没有门。§13 记录的"两连绿"对
+起立/站立成立，对行走要打引号。
+
+### 14.2 四个行走期根因（按发现顺序）
+
+1. **trot 两腿支撑时三乘子 KKT 分配退化**（run39 定位，run40 修复）。
+   两条对角腿无法同时零两个平面力矩+总力（COM 不在支撑线上时超定），
+   3×3 KKT 矩阵行列式掉到 ~5e-6，解爆炸后被钳位成 **fz=[77, 0]**——一腿
+   顶满限幅另一腿完全卸载（需求 118 N 只交付 77），每 0.3 s 一次"角部
+   自由落体"。→ n=2 时改一维最小二乘力矩分割（w* = −d₂·(d₁−d₂)/|d₁−d₂|²，
+   钳位 [0.15,0.85]），残余力矩交给姿态微调。n≥3 保留 KKT。
+   `NOMINAL_FOOTS` x 同步改为 **COM 对中**（−0.092/+0.184，对角线过 COM，
+   几何上消灭静态倾覆力矩；旧值对角中点距 COM 4.2 cm ≈ 3.2 N·m 不可控力矩）。
+
+2. **纯 50% 占空比 trot 无恢复窗**（run40-44 定位，run45+ 修复）。
+   两点支撑对"绕支撑线转动"零控制权：0.8s/0.5duty 下第一个半周期就自由
+   倾覆 >1 rad。→ `gait_scheduler` 增加 `duty_factor`（现行 **0.6s/0.75**：
+   0.15 s 两腿 / 0.15 s 四腿交替，一半时间处于可完全控制的四腿态）；
+   `cmd_vel` 起步时相位归零（从四腿重叠窗起步）；50 Hz 发布（20 Hz 有
+   50 ms 掩码抖动）。**发现途中排掉一个配置事故**：`gait_scheduler.launch.py`
+   的 `config_file` 参数名与 `state_estimation` 的全局 launch 配置撞名，
+   调度器实际加载的是 estimator.yaml（参数全默认）——已改名 `gait_scheduler_config`。
+
+3. **摆动腿无重力前馈**（run54 定位/修复）。重力补偿只给支撑腿；本机
+   单腿 ~1.5 kg（腿占全重 50%），任务空间摆动 PD（kp 300）稳态下垂
+   ~5 cm > 4 cm 摆高——**摆动脚从未真正离地**，每步拖地绊倒躯干（run40-54
+   每步一次的 wx/wy 尖峰来源）。→ `wbc_controller` 对 swing 腿也加 g(q) 前馈。
+
+4. **速度反馈被 trot 摇摆污染**（run57-59 定位/修复）。odom 速度量在
+   base_link：残余 pitch/roll 极限环折算成 vx = h·wy ≈ ±0.12 m/s 的
+   步频振荡（净位移为零），未滤波的速度环把全部切向预算耗在追打摇摆上。
+   → 平面速度环反馈加 0.35 s 低通（`walking_vel_filter_tau`）；Raibert
+   项同样滤波。
+
+辅助修复/机制：垂直力**上载斜坡** `vertical_support_load_rate=500 N/s`
+（新落地对角从 0→47 N 用 0.1 s 加载，消除每次配对切换的接触锤击）；
+**接触现实门** `support_foot_height_gate=0.12`（FK 世界系 z 比最低脚高
+12 cm 以上的"计划支撑腿"按悬空处理不给力——run56 转弯入口 rh 甩出 0.6 m
+还被喂 67 N 直接翻滚；注意 4 cm 太紧会把正常摇摆中的真实着地腿也踢掉，
+run57-62 的"原地锚死"有它一份）；速度指令 slew（0.25 m/s²）；
+`applyWalkingPlanarStabilization` 的 **tilt 渐隐**（0.25→0.45 rad 内把速度
+环力衰减到零——切向力作用在 COM 下方 0.2 m，每 1 N 就是 0.2 N·m 俯仰力
+矩，翻倒瞬态中 70 N 刹车力=14 N·m 正反馈推倒，远超 ±6 N·m 姿态权限；
+阈值必须高于常态摇摆 0.1-0.3 rad，从 0.10 起衰减会把唯一的推进器闷死，
+run51 原地踏步）；行走切向通道改为**平面环独占**（QP 的 fx/fy 与被丢弃
+的 fz 方案联合求解出来，瞬态下是不自洽的大推力，run44 单独 QP fx=+31 N）；
+摆动落足 5 mm 触地超程（2 cm 版本把"摆动脚压进地面+全刚度 PD 拴在身体
+坐标目标上"变成拖地锚，run57-61 推 20 N 原地不动的主嫌）；转向落足
+偏航前导（按 0.5·T_st·wz 旋转名义落足）。
+
+**否定结果（记入防止重试）**：wx/wy 角速率切向阻尼——odom 角速率是 20 Hz
+差分，每次触地一个尖峰，阻尼项每步都被噪声打满限幅变成随机推搡（run41/42
+一步内翻倒）。参数保留但默认 0（`walking_rate_damping`），要用必须先有
+干净的 IMU 速率源+低通。
+
+### 14.3 run39-68 轨迹摘要
+
+| run | 关键变化 | forward 投影/平面 | 备注 |
+|-----|---------|-----------------|------|
+| 39 | （§13 基线复测） | 0.93/0.93 | turn 翻滚假 PASS；vsplit=[77,0] 曝光 |
+| 40 | n=2 最小二乘分割 | 1.11/1.50 | 首半周期仍倾覆（步态时序问题曝光） |
+| 43/44 | 0.5s/0.6duty | —— | 2-3 周期发散；关平面环 A/B 排除其为主因 |
+| 45-47 | 0.6s/0.7duty + 配置撞名修复 | 0.54/1.86 | 掩码重叠首次真实生效 |
+| 50-53 | duty0.75/温和转向/28N 姿态权限 | 波动 | 仍偶发翻滚；触地超程 2cm 反致锚死 |
+| 54-55 | 切向独占 + 摆动腿重力前馈 | —— | 摇摆显著收敛（tilt≤0.34 不再翻） |
+| 57-63 | 速度滤波/门控调整 | ~0.03/0.15 | **稳定但原地踏步**（超程锚+门太紧+力太小） |
+| 64-65 | kp250/cap35/超程5mm/门0.12 | 0.82-0.89/0.85-0.99 | **直线率 89-96%**；turn 高度偶发 FAIL |
+| 66-68 | + 转向偏航前导 | 67:1.70/2.40 PASS | **重复率 ~1/3**（66/68 高度瞬态 FAIL） |
+
+### 14.4 现行行走参数（增补 §13.5）
+
+```yaml
+# gait_scheduler.yaml
+cycle_time: 0.6 / duty_factor: 0.75 / publish_rate: 50
+# swing 节点（gait_scheduler.launch.py 注入）
+swing_fraction: 0.25 / swing_height: 0.04 / touchdown_overshoot: 0.005
+foothold_offset_max: 0.06（Raibert 限幅；无对称速度前导，落足 COM 对中）
+# research_mpc.yaml（行走部分）
+walking_vx_kp: 250 / vy_kp: 100 / wz_kp: 12
+walking_fx_max_per_leg: 35 / fy: 22 / yaw_moment_max: 6
+walking_vel_filter_tau: 0.35
+vertical_support_load_rate: 500
+support_foot_height_gate: 0.12
+attitude_support_max_leg_delta: 28
+cmd 斜坡: 0.25 m/s² / 1.0 rad/s²（MPC 内）
+```
+
+### 14.5 剩余阻塞与下一步（按优先级）
+
+1. **可重复性 ~1/3 的根源是时钟驱动步态无接触感知**：掩码按钟切换，
+   实际触地/离地随摇摆漂移 ±30 ms 以上，每错位一次就是一次高度/姿态
+   瞬态（z 瞬时 0.10-0.12 踩线 FAIL）。下一步：足端接触估计（gz 接触
+   传感器或 fz 残差）驱动掩码微调（early/late touchdown 处理），或
+   摇摆收敛前先用 walk-crawl（三腿支撑）过渡。
+2. **trot 摇摆极限环（tilt 0.1-0.4 rad @1.6 Hz）压不到零**：两腿相位
+   物理上绕支撑线不可控 + 腿质量 50% 使 SRBD 掉精度。可试：对角线过
+   COM 的更严格落足（把 y 也对中）、摆动轨迹对称化降低反作用、或直接
+   上带浮动基座+全质量模型的 WBC。
+3. **行走身高基准偏移**：行走中平均 z ≈ 0.19-0.25 波动，高度环目标 0.20
+   在摇摆下偏置；考虑行走期高度环用姿态补偿后的"有效高度"。
+4. smoke 建议：行走姿态加门（up_z > 0.5 之类），杜绝"翻滚 PASS"再骗人。
+5. 转向质量：turn_angular_z 已降 0.2 rad/s；偏航用对角 fx 差分本身与
+   俯仰耦合，真要快转弯考虑步态层（落足偏航前导已做，可加 stance 旋转）。
+
+### 14.6 本轮代码改动清单
+
+| 文件 | 改动 |
+|------|------|
+| `dog2_mpc/src/mpc_node_complete.cpp` | n=2 最小二乘 fz 分割；fz 上载斜坡；接触现实门（updateSupportGeometry + computeCommandContactState）；速度环低通 + tilt 渐隐 + 切向独占；cmd slew；`[vsplit]`/`[walk_stab]` 诊断日志；`walking_rate_damping`（默认 0，负结果保留） |
+| `dog2_wbc/src/wbc_controller.cpp` | 重力前馈扩展到摆动腿（swing 下垂 5 cm 根因） |
+| `dog2_gait_planner/.../gait_scheduler_node.py` | `duty_factor` 支撑重叠窗；起步相位归零；50 Hz |
+| `dog2_gait_planner/.../swing_target_node.py` | `NOMINAL_FOOTS` COM 对中；Raibert 滤波+限幅；触地超程；转向偏航前导；无对称速度前导 |
+| `dog2_gait_planner/launch/gait_scheduler.launch.py` | `config_file`→`gait_scheduler_config`（全局撞名事故）；swing 参数注入 |
+| `dog2_bringup/config/research_mpc.yaml` | §14.4 全部行走参数 + 逐条注释 |
+| `dog2_bringup/config/smoke_test.yaml` | turn 改纯转向 0.2 rad/s（0.35+前进的快转弯是翻滚触发器） |
+| `dog2_gait_planner/config/gait_scheduler.yaml` | 0.6s/0.75duty/50Hz |

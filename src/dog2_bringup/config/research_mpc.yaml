@@ -47,6 +47,20 @@ mpc_node_complete:
     # attitude-support headroom, so 75 N silently starved the height loop.
     vertical_support_max_leg_force: 95.0
     vertical_support_height_error_limit: 0.12
+    # Per-leg UPWARD fz slew limit (N/s): a freshly landed trot pair is
+    # loaded over ~0.1 s (inside the duty overlap) instead of a 0->47 N
+    # step that hammers the contact and re-excites the diagonal tip each
+    # pair transition. Unloading is not limited (the leg lifts anyway).
+    vertical_support_load_rate: 500.0
+    # Contact reality gate: a scheduled-stance foot whose measured world-z
+    # (FK) rides this far above the lowest foot is airborne -- gross tip
+    # recovery, leg splayed out of plane -- and gets no support-force
+    # budget (run56 turn entry: fz=[67,67,0,0] with rh 0.6 m out of plane
+    # -> roll flip). MUST stay well above the trot-rock lever spread
+    # (sin(0.3 rad) * 0.28 m ~ 8 cm): at 4 cm the gate kept dropping
+    # genuinely planted uphill feet every half cycle, starving both
+    # support and the fx budget (run57-62 "anchored in place").
+    support_foot_height_gate: 0.12
     hover_force_sanitize_enabled: true
     # At the crouch the hind pair carries 76% of 117.7 N (~44.7 N/leg,
     # up to ~57 N at the measured run28 handoff pose). 72 N keeps the
@@ -71,7 +85,12 @@ mpc_node_complete:
     attitude_support_roll_kd: 20.0
     attitude_support_pitch_kp: 140.0
     attitude_support_pitch_kd: 28.0
-    attitude_support_max_leg_delta: 18.0
+    # 28 N: trot recovery authority. The 2-leg phases build ~0.5-1 rad/s of
+    # tip rate that the 4-leg overlap must arrest and reverse in ~0.12 s;
+    # 18 N (~4 N*m) was marginally too weak and the tip accumulated over
+    # 2-3 strides (run47-49). Headroom check: pair share ~59 N + 28 < 95
+    # per-leg cap, and 59 - 28 > 0 keeps the opposite foot loaded.
+    attitude_support_max_leg_delta: 28.0
     crossing_approach_speed: 0.05
     crossing_forward_assist_enabled: false
     crossing_forward_assist_force_per_leg: 14.0
@@ -91,12 +110,31 @@ mpc_node_complete:
     # 0.1 m/s error commands ~20 N of tangential force on a 12 kg robot.
     # Rebased after foot_force_sign=-1 fix: 200 was tuned against inverted
     # stance torques and over-corrected lateral/yaw once walking stabilized.
-    walking_vx_kp: 100.0
-    walking_vy_kp: 80.0
+    # Tangential authority: must decisively exceed the parasitic drags
+    # (swing-PD rubber-band on early-touchdown feet + trot-rock scrub eat
+    # ~15-20 N: run57-63 pushed 20 N and stood still; 250/35 walks 0.85 m
+    # straight, run64). The tilt fade in applyWalkingPlanarStabilization
+    # is what keeps this authority from feeding tip transients (run49).
+    walking_vx_kp: 250.0
+    walking_vy_kp: 100.0
     walking_wz_kp: 12.0
     walking_fx_max_per_leg: 35.0
-    walking_fy_max_per_leg: 30.0
-    walking_yaw_moment_max: 10.0
+    walking_fy_max_per_leg: 22.0
+    walking_yaw_moment_max: 6.0
+    # Velocity-feedback low-pass (s). Odom velocity is measured at
+    # base_link: the trot pitch/roll rock aliases in as vx = h*wy at gait
+    # frequency (+-0.12 m/s with zero net motion, run57), and unfiltered
+    # feedback spends the whole tangential budget fighting the rock
+    # instead of translating the robot.
+    walking_vel_filter_tau: 0.35
+    # Roll/pitch rate damping through common-mode stance fx/fy (N*m per
+    # rad/s). Disabled: the odom angular rate (20 Hz finite difference)
+    # spikes at every touchdown, so the damping term saturated its clamp
+    # in a noise-driven direction each step and flipped the trunk within
+    # the first stride (run41/42). Re-enable only with a filtered IMU
+    # rate source.
+    walking_rate_damping: 0.0
+    walking_rate_force_max: 20.0
     crossing_freeze_rail_targets: false
     bfs_rail_ramp_enabled: true
     bfs_rail_ramp_rate: 0.015
