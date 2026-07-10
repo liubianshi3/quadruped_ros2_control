@@ -3,7 +3,6 @@
 from launch import LaunchDescription
 from launch.actions import (
     DeclareLaunchArgument,
-    ExecuteProcess,
     IncludeLaunchDescription,
     RegisterEventHandler,
     SetEnvironmentVariable,
@@ -22,40 +21,6 @@ def generate_launch_description() -> LaunchDescription:
     )
     default_world = PathJoinSubstitution(
         [FindPackageShare("dog2_bringup"), "worlds", "flat_ground.sdf"]
-    )
-    cleanup_pattern = (
-        "[d]og2_flat_ground|flat_ground[.]sdf|/world/[d]og2_flat_ground|"
-        "[r]obot_state_publisher|[g]z_pose_to_odom|[s]im_state_estimator_node[.]py|"
-        "[g]ait_scheduler_node[.]py|[m]pc_node_complete|[w]bc_node_complete|"
-        "[w]bc_effort_mux|[m]pc_debug_adapter|[w]bc_debug_adapter|"
-        "[r]ail_lock_commander|[d]og2_locomotion_acceptance|"
-        "[v]isualization_node|[p]arameter_bridge|[i]gn gazebo|[g]z sim|"
-        "[s]pawner_joint_state_broadcaster|[s]pawner_effort_controller|"
-        "[s]pawner_rail_position_controller"
-    )
-    preclean = ExecuteProcess(
-        cmd=[
-            "bash",
-            "-lc",
-            (
-                f"pkill -TERM -f '{cleanup_pattern}' 2>/dev/null || true; "
-                "sleep 1; "
-                f"pkill -KILL -f '{cleanup_pattern}' 2>/dev/null || true"
-            ),
-        ],
-        output="screen",
-    )
-    cleanup = ExecuteProcess(
-        cmd=[
-            "bash",
-            "-lc",
-            (
-                f"pkill -TERM -f '{cleanup_pattern}' 2>/dev/null || true; "
-                "sleep 1; "
-                f"pkill -KILL -f '{cleanup_pattern}' 2>/dev/null || true"
-            ),
-        ],
-        output="screen",
     )
     system_launch = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
@@ -87,6 +52,7 @@ def generate_launch_description() -> LaunchDescription:
             acceptance_config,
             {
                 "trial_id": LaunchConfiguration("trial_id"),
+                "run_uuid": LaunchConfiguration("run_uuid"),
                 "model_variant": LaunchConfiguration("model_variant"),
                 "result_json": LaunchConfiguration("result_json"),
                 "samples_csv": LaunchConfiguration("samples_csv"),
@@ -103,6 +69,10 @@ def generate_launch_description() -> LaunchDescription:
             DeclareLaunchArgument("use_gui", default_value="false"),
             DeclareLaunchArgument("ros_domain_id", default_value="64"),
             DeclareLaunchArgument("trial_id", default_value="trial_001"),
+            DeclareLaunchArgument("run_uuid", default_value="manual"),
+            DeclareLaunchArgument(
+                "transport_partition", default_value="dog2_lav1_manual"
+            ),
             DeclareLaunchArgument("world", default_value=default_world),
             DeclareLaunchArgument(
                 "odom_gz_topic",
@@ -126,21 +96,19 @@ def generate_launch_description() -> LaunchDescription:
                 default_value="/tmp/dog2_locomotion_acceptance/trial_001.junit.xml",
             ),
             SetEnvironmentVariable("ROS_DOMAIN_ID", LaunchConfiguration("ros_domain_id")),
-            RegisterEventHandler(
-                OnProcessExit(
-                    target_action=preclean,
-                    on_exit=[system_launch, checker],
-                )
+            SetEnvironmentVariable(
+                "GZ_PARTITION", LaunchConfiguration("transport_partition")
+            ),
+            SetEnvironmentVariable(
+                "IGN_PARTITION", LaunchConfiguration("transport_partition")
             ),
             RegisterEventHandler(
                 OnProcessExit(
                     target_action=checker,
-                    on_exit=[
-                        cleanup,
-                        Shutdown(reason="Dog2 LAV1 checker finished"),
-                    ],
+                    on_exit=[Shutdown(reason="Dog2 LAV1 checker finished")],
                 )
             ),
-            preclean,
+            system_launch,
+            checker,
         ]
     )

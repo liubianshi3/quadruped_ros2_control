@@ -1392,6 +1392,15 @@ private:
             std::min(raw_height_error, vertical_support_height_error_limit_));
         const double vertical_velocity = current_srbd_state_(8);
         const double gravity_force = mass_ * 9.81;
+        // Catch mode: the trunk is meaningfully below target (3 cm; normal
+        // trot bob keeps h_err inside ~+-0.06 so this arms on the deeper
+        // half of a dip, before the 0.12 m smoke gate at h_err 0.08) or
+        // free-falling (vz < -0.25 m/s pre-arms the catch from a bounce
+        // apex while z still reads high). Above target and rising, a
+        // transient shortfall is the DESIRED deceleration -- boosting
+        // demand there pumps the pogo instead of damping it.
+        const bool catch_mode =
+            height_error > 0.03 || vertical_velocity < -0.25;
         // Symmetric height regulation. The old one-sided law
         // (mg + kp*max(0,err) + kd*max(0,-vz)) could only ever ADD force:
         // above target and rising it output exactly mg, cancelling gravity,
@@ -1413,8 +1422,17 @@ private:
                 ? std::min(attitude_support_max_leg_delta_,
                            vertical_support_max_leg_force_)
                 : 0.0;
+        // In a walking catch the attitude reservation is released: with the
+        // 28 N headroom a trot pair tops out at 2x67=134 N (~1.14 mg), which
+        // cannot arrest a deep fall (run72 sank to z=0.05 through a
+        // "full-force" recovery). Landing on 0.20 m of trunk beats holding
+        // 28 N in reserve for a trim loop; attitude deltas then only
+        // subtract from saturated legs, which is the right priority order.
+        const bool walking_catch =
+            catch_mode && current_mode_ == TrajectoryGenerator::Mode::WALKING;
         const double vertical_force_ceiling =
-            std::max(0.0, vertical_support_max_leg_force_ - stabilization_headroom);
+            std::max(0.0, vertical_support_max_leg_force_ -
+                              (walking_catch ? 0.0 : stabilization_headroom));
         const double per_leg_force =
             std::min(vertical_force_ceiling,
                      target_total_force / static_cast<double>(support_count));
@@ -1462,10 +1480,18 @@ private:
             // Keep both feet meaningfully loaded: a fully unloaded stance
             // foot loses traction authority and re-rings the contact.
             w = clampDouble(w, 0.15, 0.85);
-            fz_dist[legs[0]] =
-                clampDouble(total * w, 0.0, vertical_force_ceiling);
-            fz_dist[legs[1]] =
-                clampDouble(total * (1.0 - w), 0.0, vertical_force_ceiling);
+            // Total-conserving clamp: clamping each foot independently let
+            // an uneven split silently shed weight (w=0.85 against a 118 N
+            // demand: 67 + 17.7 = 85 N delivered, 28% short -- one sagging
+            // stride of the run64-68 height limit cycle). Clamp one foot
+            // inside the band where the OTHER foot can still absorb the
+            // remainder; total <= 2*ceiling is guaranteed above.
+            const double f0 = clampDouble(
+                total * w,
+                std::max(0.0, total - vertical_force_ceiling),
+                std::min(vertical_force_ceiling, total));
+            fz_dist[legs[0]] = f0;
+            fz_dist[legs[1]] = total - f0;
         } else {
             const double total =
                 std::min(target_total_force,
@@ -1513,9 +1539,52 @@ private:
                     0.0, vertical_force_ceiling);
                 dist_sum += fz_dist[i];
             }
-            // One rescale pass: clamping individual legs must not silently
-            // shrink the supported weight.
-            if (dist_sum > 1e-6 && dist_sum < total) {
+            // Conservation repair after clamping. WALKING only: the HOVER
+            // crouch/stand chain was validated with the one-sided
+            // proportional rescale below and must keep the moment balance
+            // the 3-multiplier solve chose (a waterfill would dump force
+            // back onto legs the balance deliberately unloaded).
+            // - Overdelivery (dist_sum > total): negative-lambda legs were
+            //   clamped to zero, the rest now sum high (run70: 97.5 N against
+            //   an 80.6 N target while the trunk was already rising -- +17 N
+            //   pumped straight into the height bounce). Scale down.
+            // - Shortfall (dist_sum < total): a proportional rescale cannot
+            //   raise a zero-clamped leg and saturates the rest at the
+            //   ceiling (run72: legs=[1011] target 149.5 N delivered 134 --
+            //   the trunk kept sinking through a "full-force" recovery).
+            //   Waterfill the deficit into ceiling headroom instead, which
+            //   by construction cannot overshoot any leg's ceiling.
+            if (current_mode_ == TrajectoryGenerator::Mode::WALKING) {
+                if (dist_sum > total + 1e-6) {
+                    const double scale = total / dist_sum;
+                    for (int i = 0; i < 4; ++i) {
+                        if (support_legs[i]) {
+                            fz_dist[i] *= scale;
+                        }
+                    }
+                } else if (dist_sum < total - 1e-6) {
+                    double headroom_sum = 0.0;
+                    std::array<double, 4> headroom{};
+                    for (int i = 0; i < 4; ++i) {
+                        if (!support_legs[i]) {
+                            continue;
+                        }
+                        headroom[i] =
+                            std::max(0.0, vertical_force_ceiling - fz_dist[i]);
+                        headroom_sum += headroom[i];
+                    }
+                    if (headroom_sum > 1e-6) {
+                        const double deficit =
+                            std::min(total - dist_sum, headroom_sum);
+                        for (int i = 0; i < 4; ++i) {
+                            if (headroom[i] > 0.0) {
+                                fz_dist[i] +=
+                                    deficit * headroom[i] / headroom_sum;
+                            }
+                        }
+                    }
+                }
+            } else if (dist_sum > 1e-6 && dist_sum < total) {
                 const double scale =
                     std::min(total / dist_sum,
                              vertical_force_ceiling * n /
@@ -1554,22 +1623,72 @@ private:
         // every 0.3 s. Limit only the UPWARD rate: a newly landed foot is
         // loaded over ~100-150 ms (spanning the duty overlap), while
         // unloading stays instant because the leg physically leaves the
-        // ground anyway. The transient total shortfall (~1-2 mm of sink)
-        // is the price of compliant load transfer.
+        // ground anyway.
         if (vertical_support_load_rate_ > 0.0 &&
             (current_mode_ == TrajectoryGenerator::Mode::WALKING ||
              current_mode_ == TrajectoryGenerator::Mode::HOVER)) {
             const double max_step = vertical_support_load_rate_ * dt_;
+            double shortfall = 0.0;
+            std::array<bool, 4> ramp_limited{};
             for (int i = 0; i < 4; ++i) {
                 if (!support_legs[i]) {
                     vertical_support_last_fz_(i) = 0.0;
                     continue;
                 }
-                fz_dist[i] = std::min(
-                    fz_dist[i], vertical_support_last_fz_(i) + max_step);
+                const double allowed =
+                    vertical_support_last_fz_(i) + max_step;
+                if (fz_dist[i] > allowed) {
+                    shortfall += fz_dist[i] - allowed;
+                    fz_dist[i] = allowed;
+                    ramp_limited[i] = true;
+                }
+            }
+            // Total-conserving backfill (WALKING only; the HOVER stand chain
+            // is validated as-is and its ramp almost never binds). The old
+            // ramp swallowed the held-back force outright ("~1-2 mm of
+            // sink"): in reality every pair transition delivered 18-46%
+            // less than body weight for ~0.1 s, the trunk free-fell, and
+            // the height loop slammed it back up -- the run64-68
+            // 0.08-0.23 m per-stride bob that made smoke a 1/3 phase
+            // gamble. Hand the shortfall to support legs with ceiling
+            // headroom instead: pass 0 prefers legs not ramp-limited this
+            // tick (the outgoing, still-planted pair during the duty
+            // overlap -- compliant load transfer survives); pass 1
+            // overrides the ramp when nobody else is available (a fresh
+            // pair alone must carry the trunk, nothing else physically
+            // can -- conservation wins over gentleness).
+            const bool backfill_active =
+                current_mode_ == TrajectoryGenerator::Mode::WALKING;
+            for (int pass = 0;
+                 pass < 2 && backfill_active && shortfall > 1e-6; ++pass) {
+                double headroom_sum = 0.0;
+                std::array<double, 4> headroom{};
+                for (int i = 0; i < 4; ++i) {
+                    if (!support_legs[i] ||
+                        (pass == 0 && ramp_limited[i])) {
+                        continue;
+                    }
+                    headroom[i] =
+                        std::max(0.0, vertical_force_ceiling - fz_dist[i]);
+                    headroom_sum += headroom[i];
+                }
+                if (headroom_sum <= 1e-6) {
+                    continue;
+                }
+                const double used = std::min(shortfall, headroom_sum);
+                for (int i = 0; i < 4; ++i) {
+                    if (headroom[i] > 0.0) {
+                        fz_dist[i] += used * headroom[i] / headroom_sum;
+                    }
+                }
+                shortfall -= used;
+            }
+            for (int i = 0; i < 4; ++i) {
+                if (!support_legs[i]) {
+                    continue;
+                }
                 vertical_support_last_fz_(i) = fz_dist[i];
-                const int z_index = i * 3 + 2;
-                foot_forces(z_index) = fz_dist[i];
+                foot_forces(i * 3 + 2) = fz_dist[i];
             }
         }
 
@@ -1580,12 +1699,12 @@ private:
             RCLCPP_INFO_THROTTLE(
                 this->get_logger(), steady_clock, 200,
                 "[vsplit] n=%d legs=[%d%d%d%d] fz=[%.1f %.1f %.1f %.1f] "
-                "total=%.1f h_err=%.3f lever_x=[%.2f %.2f %.2f %.2f] "
+                "total=%.1f h_err=%.3f catch=%d lever_x=[%.2f %.2f %.2f %.2f] "
                 "lever_y=[%.2f %.2f %.2f %.2f] src=%s",
                 support_count,
                 support_legs[0], support_legs[1], support_legs[2], support_legs[3],
                 fz_dist[0], fz_dist[1], fz_dist[2], fz_dist[3],
-                target_total_force, height_error,
+                target_total_force, height_error, catch_mode ? 1 : 0,
                 support_lever_arms_(0, 0), support_lever_arms_(1, 0),
                 support_lever_arms_(2, 0), support_lever_arms_(3, 0),
                 support_lever_arms_(0, 1), support_lever_arms_(1, 1),

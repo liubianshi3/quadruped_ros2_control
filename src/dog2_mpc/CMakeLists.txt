@@ -97,6 +97,24 @@ ament_target_dependencies(osqp_interface
   Eigen3
 )
 
+# Flat-ground receding-horizon body controller and constrained contact-force
+# allocator. Kept separate from the legacy crossing MPC.
+add_library(flat_locomotion_mpc
+  src/flat_locomotion_mpc.cpp
+)
+target_include_directories(flat_locomotion_mpc PUBLIC
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+  $<INSTALL_INTERFACE:include>
+  ${OSQP_INCLUDE_DIRS}
+)
+target_link_libraries(flat_locomotion_mpc
+  osqp_interface
+  ${OSQP_LIBRARIES}
+)
+ament_target_dependencies(flat_locomotion_mpc
+  Eigen3
+)
+
 # Crossing State Machine library
 add_library(crossing_state_machine
   src/crossing_state_machine.cpp
@@ -180,6 +198,7 @@ install(TARGETS
   sliding_constraints
   boundary_constraints
   osqp_interface
+  flat_locomotion_mpc
   crossing_state_machine
   hybrid_gait_generator
   trajectory_generator
@@ -221,8 +240,31 @@ ament_target_dependencies(mpc_node_complete
   dog2_interfaces
 )
 
+# Flat-ground controller entrypoint. It deliberately does not link the
+# crossing state machine or the legacy post-QP force shapers.
+add_executable(flat_mpc_node
+  src/flat_mpc_node.cpp
+)
+target_include_directories(flat_mpc_node PRIVATE
+  ${CMAKE_CURRENT_SOURCE_DIR}/include
+)
+target_link_libraries(flat_mpc_node
+  flat_locomotion_mpc
+  pinocchio::pinocchio
+)
+ament_target_dependencies(flat_mpc_node
+  rclcpp
+  nav_msgs
+  geometry_msgs
+  sensor_msgs
+  std_msgs
+  Eigen3
+  dog2_dynamics
+  dog2_interfaces
+)
+
 # Install executables
-install(TARGETS mpc_node_complete
+install(TARGETS mpc_node_complete flat_mpc_node
   DESTINATION lib/${PROJECT_NAME}
 )
 
@@ -442,7 +484,18 @@ ament_target_dependencies(test_crossing_mpc_simple
 )
 
 # Install test executables
-install(TARGETS test_crossing_system test_mpc_crossing_loop test_basic_mpc test_simple_tracking test_mpc_constraints test_sliding_constraints test_16d_mpc test_16d_mpc_with_sliding test_crossing_basic test_crossing_mpc test_crossing_mpc_simple
+install(TARGETS
+  test_crossing_system
+  test_mpc_crossing_loop
+  test_basic_mpc
+  test_simple_tracking
+  test_mpc_constraints
+  test_sliding_constraints
+  test_16d_mpc
+  test_16d_mpc_with_sliding
+  test_crossing_basic
+  test_crossing_mpc
+  test_crossing_mpc_simple
   DESTINATION lib/${PROJECT_NAME}
 )
 
@@ -472,6 +525,16 @@ if(BUILD_TESTING)
     ament_index_cpp
   )
   add_test(NAME test_mpc_urdf_model_data COMMAND test_mpc_urdf_model_data)
+  add_executable(test_flat_locomotion_mpc
+    test/test_flat_locomotion_mpc.cpp
+  )
+  target_link_libraries(test_flat_locomotion_mpc
+    flat_locomotion_mpc
+  )
+  ament_target_dependencies(test_flat_locomotion_mpc
+    Eigen3
+  )
+  add_test(NAME test_flat_locomotion_mpc COMMAND test_flat_locomotion_mpc)
   ament_lint_auto_find_test_dependencies()
 endif()
 

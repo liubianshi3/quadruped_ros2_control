@@ -105,6 +105,9 @@ def generate_launch_description() -> LaunchDescription:
             "model_name": LaunchConfiguration("model_name"),
             "gz_world_name": LaunchConfiguration("gz_world_name"),
             "bridge_foot_contact": LaunchConfiguration("bridge_foot_contact"),
+            "enable_acceptance_contact_sensors": LaunchConfiguration(
+                "enable_acceptance_contact_sensors"
+            ),
         }.items(),
         condition=IfCondition(
             PythonExpression(
@@ -209,6 +212,7 @@ def generate_launch_description() -> LaunchDescription:
             DeclareLaunchArgument("model_name", default_value="dog2"),
             DeclareLaunchArgument("gz_world_name", default_value="dog2_flat_ground"),
             DeclareLaunchArgument("bridge_foot_contact", default_value="true"),
+            DeclareLaunchArgument("enable_acceptance_contact_sensors", default_value="false"),
             DeclareLaunchArgument("research_stack", default_value="false"),
             position_launch,
             position_odom_bridge,

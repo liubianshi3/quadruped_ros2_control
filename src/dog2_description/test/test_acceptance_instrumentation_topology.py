@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+import tempfile
 import xml.etree.ElementTree as ET
 from copy import deepcopy
 from pathlib import Path
@@ -21,6 +22,14 @@ EXPECTED_ACCEPTANCE_SENSORS = {
     "lh_tibia_acceptance_contact",
     "rh_tibia_acceptance_contact",
     "rf_tibia_acceptance_contact",
+}
+EXPECTED_CONTACT_TOPICS = {
+    "/dog2/gz_contact/base",
+    *{
+        f"/dog2/gz_contact/{leg}_{kind}"
+        for leg in ("lf", "lh", "rh", "rf")
+        for kind in ("foot", "tibia")
+    },
 }
 
 
@@ -63,6 +72,65 @@ def _canonical_xml(element: ET.Element) -> str:
     return ET.tostring(clone, encoding="unicode")
 
 
+def _canonical_numeric_xml(element: ET.Element) -> str:
+    clone = deepcopy(element)
+    for node in clone.iter():
+        node.tail = None
+        if not (node.text or "").strip():
+            node.text = None
+        text = (node.text or "").strip()
+        if text:
+            try:
+                values = [float(value) for value in text.split()]
+            except ValueError:
+                pass
+            else:
+                node.text = " ".join(
+                    "0" if abs(value) < 1e-12 else f"{value:.12g}"
+                    for value in values
+                )
+    return ET.tostring(clone, encoding="unicode")
+
+
+def _to_sdf(root: ET.Element) -> ET.Element:
+    with tempfile.TemporaryDirectory(prefix="dog2_acceptance_sdf_") as directory:
+        urdf_path = Path(directory) / "robot.urdf"
+        urdf_path.write_text(
+            ET.tostring(root, encoding="unicode"), encoding="utf-8"
+        )
+        result = subprocess.run(
+            ["ign", "sdf", "-p", str(urdf_path)],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    return ET.fromstring(result.stdout)
+
+
+def _sdf_mechanical_signature(root: ET.Element) -> tuple[list[str], list[str]]:
+    links = []
+    for link in root.findall(".//model/link"):
+        clone = deepcopy(link)
+        for child in list(clone):
+            if child.tag not in {"inertial", "collision"}:
+                clone.remove(child)
+        for collision in clone.findall("collision"):
+            surface = collision.find("surface")
+            if surface is not None and all(
+                not node.attrib and not (node.text or "").strip()
+                for node in surface.iter()
+            ):
+                # libsdformat materializes an empty default ODE surface when a
+                # sensor is added to an otherwise untouched collision. It is
+                # semantically identical to the implicit default.
+                collision.remove(surface)
+        links.append(_canonical_numeric_xml(clone))
+    joints = [
+        _canonical_numeric_xml(joint) for joint in root.findall(".//model/joint")
+    ]
+    return links, joints
+
+
 @pytest.mark.parametrize("filename", XACRO_FILES)
 def test_acceptance_sensors_preserve_topology_and_link_physics(filename: str) -> None:
     disabled = _expand(filename, enabled=False)
@@ -98,3 +166,28 @@ def test_acceptance_sensors_preserve_topology_and_link_physics(filename: str) ->
     }
     assert disabled_sensors == set()
     assert enabled_sensors == EXPECTED_ACCEPTANCE_SENSORS
+
+    disabled_sdf = _to_sdf(disabled)
+    enabled_sdf = _to_sdf(enabled)
+    assert _sdf_mechanical_signature(enabled_sdf) == _sdf_mechanical_signature(
+        disabled_sdf
+    )
+
+    contact_topics = set()
+    for link in enabled_sdf.findall(".//model/link"):
+        collision_names = {
+            str(collision.get("name")) for collision in link.findall("collision")
+        }
+        for sensor in link.findall("sensor"):
+            if sensor.get("type") != "contact":
+                continue
+            selector = sensor.findtext("./contact/collision")
+            topic = sensor.findtext("./contact/topic")
+            assert selector in collision_names, (
+                f"{filename}: sensor {sensor.get('name')} selects missing "
+                f"collision {selector} on {link.get('name')}"
+            )
+            assert selector != "__default__"
+            assert topic and topic != "__default_topic__"
+            contact_topics.add(topic)
+    assert contact_topics == EXPECTED_CONTACT_TOPICS

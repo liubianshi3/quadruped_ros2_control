@@ -515,13 +515,26 @@ stand_max_xy_drift_m: 0.20
 ## 10. 一句话总结
 
 > ⚠️ 本节及 §6–§9 描述的是 2026-07-08 修复前的状态，已被 §11–§13 取代。
-> **当前状态请看 §13（run33/34 起立→行走全流程 PASS 后的落成基线）。**
+> **当前真实状态请看 §16；§13 只是旧 smoke 门下的历史基线。**
+>
+> **2026-07-10 验收口径更正（最高优先级）**：本文截至 §15 出现的所有
+> “全流程 PASS / 行走 PASS / 重复率”均指**旧 smoke 集成门**，不能解释为
+> 机器人已正确行走。GUI 复核证明一次被旧门判为 PASS 的 run 实际
+> tilt 峰值 2.67 rad、`up_z` 最低 −0.89，并侧向乱窜约 1.95 m。真实
+> locomotion acceptance 尚未实现，详见 §16。
 
 **（历史）** 导轨位置锁和 Pinocchio 迁移已打通，冒烟曾全绿但行走质量不合格；后续加入静态稳定站姿、启动 PD 起立、MPC 平面/垂直闭环与步态同步等一系列改进，逻辑上针对“前进不如漂移”的根因，但最新回归（run15）在启动 settle 阶段翻倒，当前阻塞点是 stand-up 序列稳定性，需先站稳再验证 WBC+MPC 行走流畅度。
 
 **（2026-07-09 现状）** 经层 0→4 逐层根因排查（COM 漏躯干惯量、WBC 力符号反、常量力臂、单边高度环+分配不守恒、posture PD 与高度环对抗五个相互掩盖的根因全部修复），起立链路 run33/34 连续两次全流程 PASS；工作面转入行走质量。详见 §12（排查过程）与 §13（落成基线）。
 
-**（2026-07-09 晚间追加）** 行走质量战役（run39-68，§14）：又挖出并修复四个行走期根因（trot 两腿 KKT 分配退化、纯 50% 占空比无恢复窗、摆动腿无重力前馈、速度反馈被 trot 摇摆污染），行走从"必翻滚"变为"姿态有界的慢速 trot"；起立/站立 30 连稳。行走全流程 PASS 已可达（run67 前进投影 1.70 m、直线率 71%）但重复率仅 ~1/3，剩余阻塞是时钟驱动步态无接触感知（见 §14.5）。
+**（2026-07-09 晚间追加，历史判断，已被 §16 的 GUI 证据推翻）** 行走质量战役（run39-68，§14）修复了四个行走期代码问题（trot 两腿 KKT 分配退化、纯 50% 占空比无恢复窗、摆动腿无重力前馈、速度反馈被 trot 摇摆污染）。当时按旧 smoke 门把 run67（前进投影 1.70 m、直线率 71%）记为“全流程 PASS”，但该门没有姿态、侧漂和接触判据，不能据此断言“姿态有界的慢速 trot”。
+
+**（2026-07-10 追加）** 确诊旧 smoke 失败中存在“垂直支撑总力每步缺斤短两 18-46% → 高度极限环”的确定性问题（§14.5），对 `applyVerticalSupport` 做总力守恒改造 + 深坠 catch 模式（§15）：交付短缺归零，旧 smoke 门通过率约 1/3 → 8/11。该比例只用于回归定位，不代表真实步态重复率。
+
+**（2026-07-10 GUI 复核后更正）** 上句的 8/11 只能写成“旧 smoke 门
+通过率”，不是行走重复率；守恒改造的有效结论仅限 `[vsplit]` 目标/实发
+总力短缺从 19%–23%（最大 66%）降到约 0%（最大 0.6%）。机器人仍存在
+严重翻滚、侧漂和错误触地，当前结论是“力分配算术守恒已修，稳定行走未达成”。
 
 ---
 
@@ -1030,11 +1043,47 @@ cmd 斜坡: 0.25 m/s² / 1.0 rad/s²（MPC 内）
 
 ### 14.5 剩余阻塞与下一步（按优先级）
 
-1. **可重复性 ~1/3 的根源是时钟驱动步态无接触感知**：掩码按钟切换，
-   实际触地/离地随摇摆漂移 ±30 ms 以上，每错位一次就是一次高度/姿态
-   瞬态（z 瞬时 0.10-0.12 踩线 FAIL）。下一步：足端接触估计（gz 接触
-   传感器或 fz 残差）驱动掩码微调（early/late touchdown 处理），或
-   摇摆收敛前先用 walk-crawl（三腿支撑）过渡。
+**（2026-07-09 深夜数据复盘追加）已确诊：1/3 重复率的直接根因是
+"行走期高度极限环"，两种失败面相（掉高 FAIL / 原地踏步 FAIL）同源。**
+
+- **现象**（run66 行走期 5 Hz `h_err` 实测）：一步之内身高在
+  0.08–0.23 m 之间摆，**峰峰值 ~15 cm**，vz 摆到 ±0.3~−0.53 m/s。
+  1 Hz 的 `MPC:` 日志把它混叠成"偶尔掉一下"，实际是每步一次的颠簸。
+  smoke 在阶段末尾采样身高：采在波谷（<0.12）就 FAIL、波峰就 PASS——
+  **本质是相位赌博，所以 ~1/3**。run68 的"原地踏步"是同一颠簸的副作用：
+  颠簸抬高 tilt → tilt 渐隐把前进力也一起掐掉。
+- **机理：垂直支撑总力每步都缺斤短两**（`[vsplit]` 实测，体重 118 N）：
+
+  ```text
+  legs=1110  total=109.5(目标)  fz=[0, 67, 0, 0]     实发 67 N  缺 43%
+  legs=0101  total=121.5        fz=[0, 67, 0, 30.2]  实发 97 N  缺 18%
+  legs=1111  total=98.9         fz=[1, 25, 25, 13]   实发 64 N  缺 46%
+  ```
+
+  躯干那一步下坠 → 高度环下一步猛补 130-154 N → 弹回去，形成**无阻尼
+  高度极限环**。三个叠加出血点：
+  1. **n=2 分割逐腿独立钳位不守恒**：w 偏到 0.85 时 67+17.7=85 N，
+     钳掉的 33 N 无人接盘；
+  2. **载荷上载斜坡（500 N/s）吞掉短缺**：配对切换后头 ~0.1 s 新支撑
+     腿被斜坡压着，被扣的力直接消失（注释里的"~1-2 mm 代价"实测被
+     duty 0.75 的频繁切换放大成十几厘米颠簸）；
+  3. **接触门+重叠窗使支撑集乱跳**（1010/0101/1110/1001/0110），每次
+     有效支撑腿数一变总力就断一档。
+- **§14.2 那批修复为何收不住**：全部是开环前馈+限幅，治好了"翻倒"，
+  但没有任何一环对"**每 tick 交付总力 = 目标总力**"给出闭环保证，
+  载荷斜坡反而在结构上破坏它。
+- **修复（2026-07-10 落地，见 §15）**：n=2 分割改总力守恒钳位（一腿
+  钳位时余量必须由另一腿吸收）；载荷斜坡加**总力守恒回填**（斜坡扣下
+  的力两遍扫描回填给有帽下余量的支撑腿：第一遍优先未被斜坡限制的旧
+  支撑对，第二遍允许突破斜坡——守恒优先于柔顺）。
+
+其余阻塞（按优先级）：
+
+1. **时钟驱动步态无接触感知**（结构性上限）：掩码按钟切换，实际触地/
+   离地随摇摆漂移 ±30 ms 以上，每错位一次就是一次高度/姿态瞬态。
+   下一步：足端接触估计（gz 接触传感器或 fz 残差）驱动掩码微调
+   （early/late touchdown 处理），或摇摆收敛前先用 walk-crawl
+   （三腿支撑）过渡。
 2. **trot 摇摆极限环（tilt 0.1-0.4 rad @1.6 Hz）压不到零**：两腿相位
    物理上绕支撑线不可控 + 腿质量 50% 使 SRBD 掉精度。可试：对角线过
    COM 的更严格落足（把 y 也对中）、摆动轨迹对称化降低反作用、或直接
@@ -1057,3 +1106,253 @@ cmd 斜坡: 0.25 m/s² / 1.0 rad/s²（MPC 内）
 | `dog2_bringup/config/research_mpc.yaml` | §14.4 全部行走参数 + 逐条注释 |
 | `dog2_bringup/config/smoke_test.yaml` | turn 改纯转向 0.2 rad/s（0.35+前进的快转弯是翻滚触发器） |
 | `dog2_gait_planner/config/gait_scheduler.yaml` | 0.6s/0.75duty/50Hz |
+
+## 15. 2026-07-10：垂直支撑总力守恒改造（run69-86）
+
+> §14.5 深夜复盘确诊"高度极限环 = 每步总力缺斤短两"之后的落地轮。
+> 只动 `applyVerticalSupport` 一个函数 + 参数注释；步态/WBC/参数值均未动。
+> **旧 smoke 集成门通过率 ~1/3 → 8/11 (~73%)；这不是行走验收结果。**
+
+### 15.1 改动内容（全部在 `dog2_mpc/src/mpc_node_complete.cpp`）
+
+1. **n=2 分割总力守恒钳位**：旧代码两腿各自独立 `clamp(0, ceiling)`，
+   w 偏到 0.85 时 67+17.7=85 N，钳掉的 33 N 无人接盘（缺 28%）。
+   改为把一腿钳在"另一腿能吸收余量"的区间内：
+   `f0 = clamp(total*w, max(0, total−ceiling), min(ceiling, total))`，
+   `f1 = total − f0`。总和恒等于 total（total ≤ 2·ceiling 由上游保证）。
+2. **n≥3 KKT 钳位后的守恒修复（WALKING 限定）**：
+   - 超发（负 λ 腿被钳到 0，其余总和超标，run70 实测 97.5 N vs 目标
+     80.6 N，趁上升期再推 +17 N 加剧弹跳）→ 等比例缩回；
+   - 短缺 → 按帽下余量瀑布式回填（等比例 rescale 无法抬升被钳到 0 的
+     腿、还会把其余腿推顶到帽上，run72 实测 149.5 目标只交付 134）。
+   - HOVER 保持原单向 rescale 不动（起立/站立链路已验证，不回归）。
+3. **载荷上载斜坡总力守恒回填（WALKING 限定）**：斜坡扣下的力不再
+   凭空消失，两遍扫描回填：第一遍给未被斜坡限制的支撑腿（重叠窗内的
+   旧支撑对——柔性换载语义保留），第二遍允许突破斜坡（支撑集只剩新
+   落地对时守恒优先于柔顺）。HOVER 保持纯斜坡。
+4. **catch 模式（WALKING 限定）**：`h_err > 0.03 || vz < −0.25` 时释放
+   姿态支撑的 28 N 预留（帽 67 → 95 N/腿）。理由：2×67=134 N (1.14mg)
+   物理上刹不住深坠（run72 z 掉到 0.05 全程"满力"仍塌）；深坠时保
+   姿态微调余量不如先接住躯干。正常步内颠簸（h_err ±0.06 内）不触发，
+   姿态权限不受影响。`[vsplit]` 日志加 `catch=` 字段。
+
+### 15.2 验证轨迹（旧 smoke 门，仅用于回归与诊断）
+
+| run | 版本 | 结果 |
+|-----|------|------|
+| 69 | 修复1+3 | （基础设施：controller_manager 未起，非控制问题） |
+| 70 | 修复1+3 | FAIL forward 0.115——曝光**超发**路径（97.5 vs 80.6 N） |
+| 71-72 | +修复2(双向) | 71 PASS；72 FAIL turn 0.050——曝光 134 N 帽刹不住深坠 |
+| 73-77 | +修复4(catch) | **4/5 PASS**（74 turn 0.070 FAIL） |
+| 79-86 | 最终版(含 HOVER 门控) | **4/6 PASS**（85 rail 0.0050 临界、86 turn 0.051；79/81 为基础设施失败不计） |
+
+- 交付守恒实测：短缺率 mean 19-23%/max 66%（run64-68）→ **0.0%/0.6%**
+  （run73-86 全部行走 tick）。
+- catch 每 run 触发 9-26 tick，确实在接（run74 实测 1010 对 74.5+75.5=150 N）。
+- 起立/站立链路无回归：全部 run settle 12.1 s、stand z≈0.192 照旧。
+- **有效结论**：守恒消灭了分配/整形器内部的“目标有力、输出少发”。
+- **不能推出的结论**：`h_err` 峰峰值仍在 ±0.10 量级，且旧 smoke 不检查
+  姿态、方向、真实触地或滑移，因此 8/11 不能证明行走质量改善。GUI 后验
+  表明“力发够了但脚没有正确 realize”仍是主问题（时钟掩码 vs 真实触地
+  错位、摇摆中打滑/绊地）。
+- 基础设施 flake：controller_manager 偶发不起（run69/78/79/81，~1/4 概率，
+  gz_ros2_control 拿 robot_description 的服务应答超时），与控制代码无关，
+  旧批次同样存在；批量脚本 `/tmp/dog2_smoke_batch.sh`（顺序跑 + 换
+  domain id + 逐 run 独立 result 文件）。
+
+### 15.3 下一步
+
+先建立 §16 所述的真实 locomotion acceptance，重新得到诚实现状基线；
+再按 §14.5 优先级做接触感知驱动掩码。禁止再以旧 smoke 百分比作为
+“稳定行走”指标。rail 0.0050 临界继续观察，不因旧门结果调整限值。
+
+## 16. 2026-07-10：GUI 目视复核、验收口径推翻与特殊机构审计
+
+### 16.1 GUI 运行能力
+
+- `src/dog2_bringup/launch/smoke_test.launch.py`
+  - 原来向 `system.launch.py` 写死 `use_gui=false`；
+  - 现新增并透传 `use_gui` launch 参数，默认仍为 `false`；
+  - `use_gui:=true` 可在 Gazebo Sim 6.18 / Fortress 中观看同一
+    stand → forward → turn 流程，不改变 headless/CI 默认行为。
+- `colcon build --packages-select dog2_bringup --symlink-install`：PASS。
+
+### 16.2 一次“旧门 PASS”为什么完全不合格
+
+GUI run 的旧 smoke 结果：
+
+```text
+STAGE stand   x=-0.057 y= 0.000 z=0.192
+STAGE forward x=-0.061 y= 0.000 z=0.194
+STAGE turn    x=-0.589 y=-1.948 z=0.193
+PASS turn_yaw_delta=2.957 z=0.211 max_rail_lock_err=0.0014
+```
+
+同一 run 的姿态统计：
+
+- tilt 均值 **0.83 rad（约 48°）**，峰值 **2.67 rad（约 153°）**；
+- `up_z` 最低 **−0.89**；
+- 34 个姿态采样中 15 个 `up_z<0.5`，其中 10 个 `up_z<0`；
+- forward 期间主要产生近 **1.95 m 横向乱窜**，不是受控直行。
+
+因此该 run 应被真实验收立即判 FAIL；rail lock 1.4 mm 也说明近 2 m 乱窜
+不是导轨位置本身滑动造成的。
+
+### 16.3 `smoke_check.py` 的旧判据缺陷
+
+1. forward 虽计算 `projected_distance`，真正 PASS 门却只检查
+   `hypot(dx,dy)`；任意方向移动超过 0.2 m 即可通过。
+2. turn 检查历史峰值 yaw delta；翻滚或往返扫角也可通过。
+3. forward/turn 不检查 roll、pitch、tilt、`up_z`、侧漂、真实接触、
+   支撑足滑移或摆动足净空。
+4. `gait_quality` 分支仍是占位桩：
+   - roll/pitch/yaw-rate/rail-delta/stance-slip 硬编码为 0；
+   - swing clearance 实际使用机身 `pose.z`。
+
+后续必须拆分：
+
+- `stack_smoke`：只验节点、话题、控制器和数据流；
+- `locomotion_acceptance`：用 Gazebo ground truth 连续检查姿态、方向、
+  接触、滑移、摆动净空、速度跟踪和重复率；
+- `mobility_benchmark`：在基础行走通过后再测坡面、台阶、沟槽和窗口。
+
+### 16.4 Dog2 与主流四足的结构差异
+
+Dog2 每腿是：
+
+```text
+P_x (rail) – R_z (coxa yaw) – R_y (femur pitch) – R_y (tibia pitch)
+```
+
+Unitree/ANYmal 等主流犬型四足通常是固定髋座：
+
+```text
+R_x (HAA) – R_y (HFE) – R_y (KFE)
+```
+
+现行 symmetric URDF 的 rail 限位真值为：
+
+```text
+lf [ 0.000, +0.111]    lh [-0.111, 0.000]
+rh [-0.111,  0.000]    rf [ 0.000, +0.111]
+```
+
+当前文档旧段落和 `mpc_controller.cpp` crossing corridor 中仍存在 rh/rf
+符号相反的旧硬编码，进入真实 rail crossing 前必须收口。
+
+### 16.5 代码是否针对特殊结构
+
+- **明确适配**：URDF/Pinocchio、按 joint name 读取限位、4DOF IK/FK、
+  WBC 的 3×4 URDF 雅可比及 rail 力输出。
+- **平地退化使用**：当前研究栈用 `rail_position_controller` 锁零，
+  mux `include_rail_in_output=False`，活动输出只驱动 12 个旋转关节。
+- **部分适配**：MPC 是 12D SRBD + 4 rail 位置，但 rail 速度为外生输入，
+  足端耦合只按 x 平移近似，不是完整 16DOF 联合优化。
+- **未适配/技术债**：活动 gait scheduler/swing target 只生成 rail=0
+  的 3D 足端目标；`coxa` 实为 yaw，却在部分 Python API 中映射为
+  `hip_roll`；仿真状态估计没有真实足端位置/接触状态。
+
+### 16.6 旋转结构决策
+
+- 当前乱窜不能单独证明 `P–Rz–Ry–Ry` 机械不可行；软件仍有坐标、接触
+  和验收缺口。
+- 若优先主流稳定行走但保留穿窗能力，候选折中是
+  **`P–Rx–Ry–Ry`**：rail 只做低频形态重排，平地锁定，旋转链与
+  HAA/HFE/KFE 对齐。
+- 改机械前建立三组同条件仿真：
+  1. 当前 `P–Rz–Ry–Ry`，rail 真 fixed；
+  2. `P–Rx–Ry–Ry`，rail 真 fixed；
+  3. 标准 `Rx–Ry–Ry`。
+- 用严格验收比较工作空间、雅可比条件数、静态力矩、低速 crawl 的
+  tilt/滑移/方向跟踪和 10 次重复结果，再做机械决策。
+
+## 17. 2026-07-10：LAV2-R7C4 后的独立 flat crawl 重写（run9–25）
+
+> 本节是 2026-07-10 停工基线。完整逐项变更与验收器记录同步写入根目录
+> `DEVELOPMENT_LOG.md`。最重要的结论是：**新验收器和新控制链已落地，但正常
+> 行走尚未通过；不得把“能完成两次摆腿”写成行走成功。**
+
+### 17.1 架构冻结
+
+- 保留旧 `effort_research` crossing 栈；
+- 新增独立 `flat_locomotion`：
+  - contact-aware crawl gait scheduler；
+  - measured-FK swing target；
+  - `FlatLocomotionMPC` + `flat_mpc_node`；
+  - `WBCController` + `flat_wbc_node`；
+  - 独立 `flat_locomotion.yaml`；
+- `control_stack.launch.py` 负责选择控制栈，平地模式不改写旧 crossing 行为；
+- 验收目标冻结为：站立 → 直行 → 停稳 → 返回 → 停稳 → 原地转向 →
+  最终停稳，连续 3 次通过，再执行 10 次统计。
+
+### 17.2 控制链关键实现
+
+1. crawl 使用 `SHIFT/SWING/SETTLE`，真实 contact 必须经历 release 和
+   touchdown；腿序为 `LF/RF/LH/RH`。
+2. swing 轨迹为垂直抬升、水平转移、垂直落下；touchdown z 相对实测离地
+   高度搜索 5 mm，避免短腿被固定 `-0.210 m` 目标拉到关节极限。
+3. MPC 以当前 Pinocchio COM 和四足 FK 构造力臂，OSQP 分配接触力；三足
+   支撑解出的所有静态法向力达到门槛后才允许卸载。
+4. 全局路径积分和局部支撑三角形对中分离；局部 shift 前后/横向上限为
+   `0.12/0.06 m`。
+5. WBC 将世界系地面反力旋回 base frame 后执行 `-Jᵀf`，摆动腿执行
+   Cartesian PD，并增加重力补偿和 URDF hard limit 前 0.12 rad 的软限位。
+6. MPC/WBC freshness 使用 steady clock；Gazebo/ROS sim time 只用于协议与
+   轨迹。
+
+### 17.3 失败收敛过程
+
+| run | 首个失败 | 已确认原因/处理 |
+|---|---|---|
+| 9–10 | `TILT_LIMIT` | shift 突变、拖脚和三足力约束过硬；改平滑 shift、三段 swing、动态稳定门 |
+| 11 | `STAGE_TIMEOUT` | 初始后腿卸载静态不可行；改前腿先行和实测三足门 |
+| 13 | `JOINT_POSITION_LIMIT` | RH femur 超 hard limit 约 19 µrad；加 joint soft limit |
+| 14 | `STAGE_TIMEOUT` | 支撑对中污染全局路径；拆分 adaptive local shift |
+| 15 | `ROUTE_CORRIDOR` | local shift 横漂累积到约 0.0801 m；限制横向 shift |
+| 20/23 | `READINESS_TIMEOUT` | orphan Gazebo；batch 加进程组回收，外部硬中断仍须人工清理 |
+| 19/21 | 后腿不可达/`STAGE_TIMEOUT` | 固定 touchdown z 多下探 3.3 cm；改相对离地高度 |
+| 24 | `STAGE_TIMEOUT` | 前两拍完成，LH 三足最小法向力仅 2.00 N，低于 15 N |
+| 25 | 无结果 | 为诊断将 crawl lead 置 0，启动后按停工要求人工中断 |
+
+### 17.4 run24 最终可复现状态
+
+报告：
+
+```text
+/tmp/dog2_flat_rewrite_run24/
+  run_20260710T140601Z_1a52fe05/trial_001.json
+```
+
+结果与终态：
+
+```text
+FAIL_LOCOMOTION / STAGE_TIMEOUT / OUTBOUND
+projection       0.07975 m
+lateral         -0.01895 m
+heading error    0.00543 rad
+tilt             0.16936 rad
+static fz (LH)  [52.12, 63.62, 2.00] N   < 15 N gate
+```
+
+这次没有 base/tibia 非法接触，线/角速度最终收敛到零，且 LF、RF 均完成真实
+release/touchdown。失败发生在 LH 卸载门，说明安全门正确阻止了边缘支撑下继续
+抬腿。与此同时，MPC 参考与实际位置仍相差约 6 cm，继续加参考主要变成
+`pitch≈-0.145 rad, roll≈-0.088 rad`，所以不应再靠无限扩大 body shift 调参。
+
+静态几何复盘显示，`crawl_velocity_lead_sec=1.2` 在 `-0.05 m/s` 命令下把
+前足目标整体提前 6 cm，抵消了本应把前足重排到 COM 附近的 nominal 位置，使
+LF–RH 对角支撑边再次贴近 COM。停工前已诊断性改为 `0.0`，但 run25 被人工
+中断，**该假设尚无 runtime 证据，不能标记为修复完成**。
+
+### 17.5 测试与停止点
+
+- LAV/description/bringup：46 tests 全过；
+- gait scheduler + swing target 最新回归：14 tests 全过；
+- flat MPC force allocation/static support 与 WBC Jacobian/gravity/soft-limit
+  核心 C++ 测试通过；
+- 正式 LAV：0 次通过，三连/十连均未开始；
+- run25 进程组已终止；恢复工作前仍需先确认没有 `ign gazebo` 遗留。
+
+下一次工作必须从验证 `crawl_velocity_lead_sec=0.0` 的单轮结果开始。若 LH
+静态裕量没有明显改善，应实现“启动支撑重排落脚”和“稳态前进 velocity lead”
+两个阶段，而不是降低 15 N 门槛掩盖支撑几何问题。

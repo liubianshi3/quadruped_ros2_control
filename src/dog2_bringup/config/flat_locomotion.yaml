@@ -1,0 +1,73 @@
+flat_mpc_node:
+  ros__parameters:
+    odom_topic: /odom
+    joint_state_topic: /joint_states
+    contact_phase_topic: /dog2/gait/contact_phase
+    body_shift_topic: /dog2/gait/body_shift
+    body_shift_error_topic: /dog2/mpc/body_shift_error
+    cmd_vel_topic: /cmd_vel
+    control_frequency: 50.0
+    target_height: 0.20
+    state_freshness_sec: 0.20
+    command_timeout_sec: 0.30
+    velocity_filter_tau: 0.10
+
+    # The validator starts at 0.05 m/s. These bounds prevent a stale or
+    # malformed command from turning the first crawl into a dynamic gait.
+    max_linear_speed: 0.12
+    max_angular_speed: 0.30
+    max_linear_acceleration: 0.20
+    max_angular_acceleration: 0.50
+    max_position_error: 0.10
+    max_yaw_error: 0.35
+    body_shift_kp: 0.0
+    body_shift_kd: 80.0
+    body_shift_max_linear_speed: 0.025
+    body_shift_max_angular_speed: 0.15
+    body_shift_max_tilt: 0.18
+    support_ready_min_normal_force: 15.0
+    support_center_gain: 1.0
+    support_center_max_speed: 0.10
+    support_center_max_forward_offset: 0.12
+    support_center_max_lateral_offset: 0.06
+
+    horizon: 50
+    mpc_dt: 0.02
+    friction_coefficient: 0.65
+    # Do not force a corner load when the measured COM lies close to one
+    # edge of a three-foot support triangle. A 10 N lower bound created
+    # 3-4 N*m of uncommanded roll/pitch at every lift transition.
+    min_stance_force: 0.5
+    max_stance_force: 95.0
+    force_regularization: 0.002
+
+    # Centroidal inertia of the expanded symmetric URDF at the stage-1
+    # stance, computed with Pinocchio CCRBA (kg*m^2).
+    body_inertia_diagonal: [0.13567, 0.25110, 0.32313]
+    state_weights:
+      [10000.0, 10000.0, 220.0, 220.0, 260.0, 40.0,
+       60.0, 60.0, 60.0, 24.0, 28.0, 8.0]
+    wrench_weights: [0.08, 0.08, 0.025, 0.06, 0.06, 0.08]
+    allocation_weights: [1.0, 1.0, 3.0, 12.0, 12.0, 6.0]
+    max_net_force: [55.0, 50.0, 185.0]
+    max_net_torque: [20.0, 24.0, 10.0]
+
+flat_wbc_node:
+  ros__parameters:
+    odom_topic: /odom
+    joint_state_topic: /joint_states
+    contact_phase_topic: /dog2/gait/contact_phase
+    swing_target_topic: /dog2/gait/swing_foot_target
+    foot_force_topic: /dog2/mpc/foot_forces
+    joint_effort_topic: /dog2/wbc/joint_effort_command
+    rail_effort_topic: /dog2/wbc/rail_effort_command
+    state_freshness_sec: 0.20
+    max_torque: 50.0
+    foot_force_sign: -1.0
+    gravity_compensation: true
+    torque_slew_rate: 400.0
+    swing_kp: [220.0, 220.0, 360.0]
+    swing_kd: [10.0, 10.0, 16.0]
+    joint_limit_margin: 0.12
+    joint_limit_kp: 35.0
+    joint_limit_kd: 1.5

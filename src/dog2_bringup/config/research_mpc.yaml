@@ -51,6 +51,10 @@ mpc_node_complete:
     # loaded over ~0.1 s (inside the duty overlap) instead of a 0->47 N
     # step that hammers the contact and re-excites the diagonal tip each
     # pair transition. Unloading is not limited (the leg lifts anyway).
+    # In WALKING the ramp is total-conserving: force held back from a
+    # ramping leg is backfilled to other support legs with cap headroom
+    # (run64-72: the swallowed shortfall was 18-46% of body weight per
+    # pair transition -- the per-stride height bob / 1/3 repeatability).
     vertical_support_load_rate: 500.0
     # Contact reality gate: a scheduled-stance foot whose measured world-z
     # (FK) rides this far above the lowest foot is airborne -- gross tip

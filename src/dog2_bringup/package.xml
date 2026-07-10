@@ -24,11 +24,15 @@
   <depend>launch</depend>
   <depend>launch_ros</depend>
   <depend>nav_msgs</depend>
+  <depend>pinocchio</depend>
   <depend>rclpy</depend>
+  <depend>rcl_interfaces</depend>
   <depend>ros_gz_bridge</depend>
+  <depend>ros_gz_interfaces</depend>
   <depend>ros_gz_sim</depend>
   <depend>sensor_msgs</depend>
   <depend>std_msgs</depend>
+  <depend>tf2_msgs</depend>
   <depend>tf2_ros</depend>
   <depend>xacro</depend>
 

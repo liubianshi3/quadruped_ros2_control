@@ -86,6 +86,15 @@ if(BUILD_TESTING AND DOG2_ENABLE_URDF_SHIFT_BOUNDARY_CHECK)
         ${CMAKE_CURRENT_SOURCE_DIR}/test/test_symmetric_check_script.py
         -q
     )
+
+    add_test(
+      NAME dog2_acceptance_instrumentation_topology_check
+      COMMAND
+        ${PYTHON3_EXECUTABLE}
+        -m pytest
+        ${CMAKE_CURRENT_SOURCE_DIR}/test/test_acceptance_instrumentation_topology.py
+        -q
+    )
   else()
     message(WARNING "Skip dog2_urdf_shift_boundary_check: python3 or xacro not found")
   endif()

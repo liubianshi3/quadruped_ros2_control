@@ -3,12 +3,15 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import List, Optional
 
 import rclpy
 from dog2_interfaces.msg import ContactPhase, GaitCommand
-from geometry_msgs.msg import Twist
+from geometry_msgs.msg import Twist, Vector3Stamped
 from rclpy.node import Node
+from ros_gz_interfaces.msg import Contacts
+from std_msgs.msg import Float64
 
 LEG_NAMES = ["lf", "lh", "rh", "rf"]
 
@@ -16,6 +19,175 @@ LEG_NAMES = ["lf", "lh", "rh", "rf"]
 # Diagonal-pair phase offsets: lf/rh start their stance at phase 0,
 # lh/rf half a cycle later.
 _TROT_OFFSETS = (0.0, 0.5, 0.0, 0.5)
+# Reposition the two front feet before either hind foot. In the measured
+# startup stance the COM is about 5 cm behind the foot-rectangle centre;
+# unloading a hind foot first puts the COM outside the remaining triangle
+# and would require a negative normal force. LF/RF are feasible at startup,
+# and their first touchdowns centre the support polygon for LH/RH.
+CRAWL_SWING_ORDER = (0, 3, 1, 2)  # lf, rf, lh, rh
+
+# Nominal feet relative to the body-centred COM reference. The support
+# triangle centroid after removing one foot gives a conservative body shift
+# direction before that foot is unloaded.
+_CRAWL_NOMINAL_FOOTS_XY = (
+    (-0.092, -0.118),
+    (0.184, -0.118),
+    (0.184, 0.118),
+    (-0.092, 0.118),
+)
+_CRAWL_COM_XY = (0.046, 0.0)
+
+
+@dataclass(frozen=True)
+class CrawlOutput:
+    phases: List[int]
+    state: str
+    active_leg: int
+    body_shift_x: float
+    body_shift_y: float
+    late_touchdown: bool
+
+
+def crawl_body_shift(leg: int, scale: float = 0.65) -> tuple[float, float]:
+    """Return a COM shift toward the remaining support-triangle centroid."""
+    support = [
+        position
+        for index, position in enumerate(_CRAWL_NOMINAL_FOOTS_XY)
+        if index != leg
+    ]
+    support_x = sum(position[0] for position in support) / len(support)
+    support_y = sum(position[1] for position in support) / len(support)
+    return (
+        scale * (support_x - _CRAWL_COM_XY[0]),
+        scale * (support_y - _CRAWL_COM_XY[1]),
+    )
+
+
+class ContactAwareCrawl:
+    """Three-foot-support crawl with release/touchdown confirmation."""
+
+    def __init__(
+        self,
+        *,
+        pre_shift_sec: float,
+        swing_sec: float,
+        settle_sec: float,
+        max_swing_sec: float,
+        body_shift_scale: float,
+        contact_aware: bool,
+    ) -> None:
+        self.pre_shift_sec = max(0.0, float(pre_shift_sec))
+        self.swing_sec = max(0.05, float(swing_sec))
+        self.settle_sec = max(0.0, float(settle_sec))
+        self.max_swing_sec = max(self.swing_sec, float(max_swing_sec))
+        self.body_shift_scale = max(0.0, float(body_shift_scale))
+        self.contact_aware = bool(contact_aware)
+        self._moving = False
+        self.reset()
+
+    def reset(self) -> None:
+        self.state = "SHIFT"
+        self.order_index = 0
+        self.elapsed_sec = 0.0
+        self.release_seen = False
+        self.shift_start_x = 0.0
+        self.shift_start_y = 0.0
+
+    @property
+    def active_leg(self) -> int:
+        return CRAWL_SWING_ORDER[self.order_index]
+
+    def _output(self, late_touchdown: bool = False) -> CrawlOutput:
+        phases = [ContactPhase.STANCE] * 4
+        if self.state == "SWING":
+            phases[self.active_leg] = ContactPhase.SWING
+
+        target_x, target_y = crawl_body_shift(
+            self.active_leg, self.body_shift_scale
+        )
+        if self.state == "SHIFT":
+            ratio = min(1.0, self.elapsed_sec / max(self.pre_shift_sec, 1e-6))
+            blend = ratio * ratio * (3.0 - 2.0 * ratio)
+            body_shift_x = self.shift_start_x + blend * (
+                target_x - self.shift_start_x
+            )
+            body_shift_y = self.shift_start_y + blend * (
+                target_y - self.shift_start_y
+            )
+        else:
+            # Keep the COM inside the completed leg's support triangle through
+            # touchdown. Returning to zero here caused a 2-3 cm lateral
+            # reference reversal immediately after impact.
+            body_shift_x = target_x
+            body_shift_y = target_y
+        return CrawlOutput(
+            phases=phases,
+            state=self.state,
+            active_leg=self.active_leg,
+            body_shift_x=body_shift_x,
+            body_shift_y=body_shift_y,
+            late_touchdown=late_touchdown,
+        )
+
+    def update(
+        self,
+        dt_sec: float,
+        moving: bool,
+        actual_contacts: List[bool],
+        shift_ready: bool = True,
+    ) -> CrawlOutput:
+        if len(actual_contacts) != 4:
+            raise ValueError("actual_contacts must contain lf,lh,rh,rf")
+        if not moving:
+            self._moving = False
+            self.reset()
+            return CrawlOutput(
+                phases=[ContactPhase.STANCE] * 4,
+                state="STAND",
+                active_leg=self.active_leg,
+                body_shift_x=0.0,
+                body_shift_y=0.0,
+                late_touchdown=False,
+            )
+        if not self._moving:
+            self.reset()
+            self._moving = True
+
+        self.elapsed_sec += max(0.0, float(dt_sec))
+        all_contact = all(actual_contacts)
+
+        if self.state == "SHIFT":
+            ready = (not self.contact_aware or all_contact) and shift_ready
+            if self.elapsed_sec >= self.pre_shift_sec and ready:
+                self.state = "SWING"
+                self.elapsed_sec = 0.0
+                self.release_seen = False
+        elif self.state == "SWING":
+            active_contact = actual_contacts[self.active_leg]
+            if not active_contact:
+                self.release_seen = True
+            touchdown = self.release_seen and active_contact
+            ready = not self.contact_aware or touchdown
+            if self.elapsed_sec >= self.swing_sec and ready:
+                self.state = "SETTLE"
+                self.elapsed_sec = 0.0
+        elif self.state == "SETTLE":
+            ready = not self.contact_aware or all_contact
+            if self.elapsed_sec >= self.settle_sec and ready:
+                self.shift_start_x, self.shift_start_y = crawl_body_shift(
+                    self.active_leg, self.body_shift_scale
+                )
+                self.order_index = (self.order_index + 1) % len(CRAWL_SWING_ORDER)
+                self.state = "SHIFT"
+                self.elapsed_sec = 0.0
+                self.release_seen = False
+
+        late = (
+            self.state == "SWING"
+            and self.contact_aware
+            and self.elapsed_sec > self.max_swing_sec
+        )
+        return self._output(late)
 
 
 def compute_phase_array(
@@ -37,6 +209,15 @@ def compute_phase_array(
             else ContactPhase.SWING
             for offset in _TROT_OFFSETS
         ]
+    if gait == "crawl":
+        slot_position = (phase % 1.0) * 4.0
+        slot = min(3, int(slot_position))
+        local_phase = slot_position - slot
+        swing_slot_fraction = min(1.0, max(0.0, (1.0 - duty) * 4.0))
+        phases = [ContactPhase.STANCE] * 4
+        if local_phase < swing_slot_fraction:
+            phases[CRAWL_SWING_ORDER[slot]] = ContactPhase.SWING
+        return phases
     return [ContactPhase.STANCE, ContactPhase.STANCE, ContactPhase.STANCE, ContactPhase.SWING]
 
 
@@ -51,6 +232,23 @@ class GaitSchedulerNode(Node):
         self.declare_parameter("cmd_vel_topic", "/cmd_vel")
         self.declare_parameter("contact_phase_topic", "/dog2/gait/contact_phase")
         self.declare_parameter("gait_command_topic", "/dog2/gait/command")
+        self.declare_parameter("body_shift_topic", "/dog2/gait/body_shift")
+        self.declare_parameter(
+            "body_shift_error_topic", "/dog2/mpc/body_shift_error"
+        )
+        self.declare_parameter("body_shift_tolerance_m", 0.012)
+        self.declare_parameter("shift_error_freshness_sec", 0.20)
+        self.declare_parameter("contact_aware", True)
+        self.declare_parameter("contact_freshness_sec", 0.20)
+        self.declare_parameter("crawl_pre_shift_sec", 0.45)
+        self.declare_parameter("crawl_swing_sec", 0.45)
+        self.declare_parameter("crawl_settle_sec", 0.20)
+        self.declare_parameter("crawl_max_swing_sec", 1.20)
+        self.declare_parameter("crawl_body_shift_scale", 0.65)
+        for leg in LEG_NAMES:
+            self.declare_parameter(
+                f"foot_contact_topic_{leg}", f"/dog2/foot_contact/{leg}"
+            )
 
         self._gait = str(self.get_parameter("gait").value)
         self._cycle_time = max(0.1, float(self.get_parameter("cycle_time").value))
@@ -61,6 +259,31 @@ class GaitSchedulerNode(Node):
         self._elapsed = 0.0
         self._moving = False
         self._last_cmd = Twist()
+        self._contact_aware = bool(self.get_parameter("contact_aware").value)
+        self._contact_freshness_sec = max(
+            0.01, float(self.get_parameter("contact_freshness_sec").value)
+        )
+        self._actual_contacts = [False] * 4
+        self._contact_stamp_sec = [float("-inf")] * 4
+        self._body_shift_error = float("inf")
+        self._body_shift_error_stamp_sec = float("-inf")
+        self._body_shift_tolerance_m = max(
+            0.0, float(self.get_parameter("body_shift_tolerance_m").value)
+        )
+        self._shift_error_freshness_sec = max(
+            0.01,
+            float(self.get_parameter("shift_error_freshness_sec").value),
+        )
+        self._crawl = ContactAwareCrawl(
+            pre_shift_sec=float(self.get_parameter("crawl_pre_shift_sec").value),
+            swing_sec=float(self.get_parameter("crawl_swing_sec").value),
+            settle_sec=float(self.get_parameter("crawl_settle_sec").value),
+            max_swing_sec=float(self.get_parameter("crawl_max_swing_sec").value),
+            body_shift_scale=float(
+                self.get_parameter("crawl_body_shift_scale").value
+            ),
+            contact_aware=self._contact_aware,
+        )
 
         self.create_subscription(
             Twist,
@@ -83,6 +306,25 @@ class GaitSchedulerNode(Node):
             GaitCommand,
             str(self.get_parameter("gait_command_topic").value),
             10,
+        )
+        self._body_shift_pub = self.create_publisher(
+            Vector3Stamped,
+            str(self.get_parameter("body_shift_topic").value),
+            10,
+        )
+        if self._contact_aware:
+            for leg_index, leg in enumerate(LEG_NAMES):
+                self.create_subscription(
+                    Contacts,
+                    str(self.get_parameter(f"foot_contact_topic_{leg}").value),
+                    lambda msg, index=leg_index: self._on_contact(index, msg),
+                    20,
+                )
+        self.create_subscription(
+            Float64,
+            str(self.get_parameter("body_shift_error_topic").value),
+            self._on_body_shift_error,
+            20,
         )
         self.create_timer(1.0 / self._publish_rate, self._on_timer)
 
@@ -113,17 +355,61 @@ class GaitSchedulerNode(Node):
             for value in [msg.linear_x, msg.linear_y, msg.angular_z]
         ))
 
+    def _now_sec(self) -> float:
+        return self.get_clock().now().nanoseconds / 1e9
+
+    def _on_contact(self, leg: int, msg: Contacts) -> None:
+        self._actual_contacts[leg] = bool(msg.contacts)
+        self._contact_stamp_sec[leg] = self._now_sec()
+
+    def _fresh_contacts(self) -> List[bool]:
+        if not self._contact_aware:
+            return [True] * 4
+        now = self._now_sec()
+        return [
+            active and now - stamp <= self._contact_freshness_sec
+            for active, stamp in zip(
+                self._actual_contacts, self._contact_stamp_sec
+            )
+        ]
+
+    def _on_body_shift_error(self, msg: Float64) -> None:
+        self._body_shift_error = float(msg.data)
+        self._body_shift_error_stamp_sec = self._now_sec()
+
+    def _body_shift_ready(self) -> bool:
+        return (
+            self._now_sec() - self._body_shift_error_stamp_sec
+            <= self._shift_error_freshness_sec
+            and self._body_shift_error <= self._body_shift_tolerance_m
+        )
+
     def _on_timer(self) -> None:
         self._elapsed = (self._elapsed + 1.0 / self._publish_rate) % self._cycle_time
         phase = self._elapsed / self._cycle_time
+        if self._gait == "crawl":
+            crawl = self._crawl.update(
+                1.0 / self._publish_rate,
+                self._moving,
+                self._fresh_contacts(),
+                self._body_shift_ready(),
+            )
+            phases = crawl.phases
+            if crawl.late_touchdown:
+                self.get_logger().error(
+                    f"crawl late touchdown: {LEG_NAMES[crawl.active_leg]}"
+                )
+        else:
+            crawl = None
+            phases = compute_phase_array(
+                self._gait, phase, self._moving, self._duty_factor
+            )
 
         contact_msg = ContactPhase()
         contact_msg.header.stamp = self.get_clock().now().to_msg()
         contact_msg.gait = self._gait
         contact_msg.leg_names = list(LEG_NAMES)
-        contact_msg.phase = compute_phase_array(
-            self._gait, phase, self._moving, self._duty_factor
-        )
+        contact_msg.phase = phases
         contact_msg.cycle_time = float(self._cycle_time)
 
         gait_cmd_msg = GaitCommand()
@@ -136,6 +422,18 @@ class GaitSchedulerNode(Node):
 
         self._contact_pub.publish(contact_msg)
         self._gait_cmd_pub.publish(gait_cmd_msg)
+        body_shift = Vector3Stamped()
+        body_shift.header = contact_msg.header
+        body_shift.header.frame_id = "base_link"
+        if crawl is not None:
+            body_shift.vector.x = crawl.body_shift_x
+            body_shift.vector.y = crawl.body_shift_y
+            if crawl.state != "STAND":
+                # z is a discrete upcoming-leg code (1=lf ... 4=rf), not a
+                # vertical shift. MPC uses it to verify the measured
+                # three-foot support triangle before authorizing unload.
+                body_shift.vector.z = float(crawl.active_leg + 1)
+        self._body_shift_pub.publish(body_shift)
 
 
 def main(args: Optional[List[str]] = None) -> None:

@@ -43,7 +43,8 @@
                                  femur_primitive_ixx:='0' femur_primitive_iyy:='0' femur_primitive_izz:='0'
                                  tibia_primitive_xyz:='0 0 0' tibia_primitive_rpy:='0 0 0'
                                  tibia_primitive_length:='0' tibia_primitive_radius:='0'
-                                 tibia_primitive_ixx:='0' tibia_primitive_iyy:='0' tibia_primitive_izz:='0'">
+                                 tibia_primitive_ixx:='0' tibia_primitive_iyy:='0' tibia_primitive_izz:='0'
+                                 enable_acceptance_contact_sensors:='false'">
 
   <link name="${prefix}_rail_link">
     <inertial>
@@ -340,10 +341,33 @@
     <minDepth>${foot_contact_min_depth}</minDepth>
     <maxVel>${foot_contact_max_vel}</maxVel>
     <material>Gazebo/Grey</material>
+  </gazebo>
+
+  <!--
+    tibia_link and foot_link are intentionally fixed-joint-lumped into the
+    surviving tibia_drive_frame.  Attach sensors directly to that surviving
+    frame and select the deterministic post-lump collision names.  This keeps
+    the default mechanics while making every sensor selector resolvable in the
+    generated SDF.
+  -->
+  <gazebo reference="${prefix}_tibia_drive_frame">
+    <xacro:if value="${enable_acceptance_contact_sensors}">
+      <sensor name="${prefix}_tibia_acceptance_contact" type="contact">
+        <always_on>true</always_on>
+        <update_rate>200</update_rate>
+        <contact>
+          <collision>${prefix}_tibia_drive_frame_fixed_joint_lump__${prefix}_tibia_link_collision</collision>
+          <topic>/dog2/gz_contact/${prefix}_tibia</topic>
+        </contact>
+      </sensor>
+    </xacro:if>
     <sensor name="${prefix}_foot_contact" type="contact">
       <always_on>true</always_on>
       <update_rate>200</update_rate>
-      <contact/>
+      <contact>
+        <collision>${prefix}_tibia_drive_frame_fixed_joint_lump__${prefix}_foot_link_collision_1</collision>
+        <topic>/dog2/gz_contact/${prefix}_foot</topic>
+      </contact>
     </sensor>
   </gazebo>
 

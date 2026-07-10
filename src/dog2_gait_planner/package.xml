@@ -12,8 +12,11 @@
 
   <depend>rclpy</depend>
   <depend>nav_msgs</depend>
+  <depend>sensor_msgs</depend>
   <depend>std_msgs</depend>
   <depend>geometry_msgs</depend>
+  <depend>ros_gz_interfaces</depend>
+  <depend>pinocchio</depend>
   <depend>dog2_interfaces</depend>
 
   <test_depend>ament_lint_auto</test_depend>

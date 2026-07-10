@@ -2,6 +2,7 @@ dog2_locomotion_acceptance:
   ros__parameters:
     protocol_id: dog2_lav1_flat
     trial_id: trial_001
+    run_uuid: manual
 
     # Gazebo ground-truth and control streams. Do not replace these with the
     # estimator's all_true contact state or MPC force commands.
@@ -29,7 +30,12 @@ dog2_locomotion_acceptance:
     contact_event_timeout_sec: 0.10
     wait_ready_timeout_sec: 60.0
     wait_settle_timeout_sec: 45.0
+    # Protocol/stage durations are simulation time. These two are independent
+    # wall-clock guards for a dead or extremely slow simulator.
     total_timeout_sec: 180.0
+    wall_watchdog_timeout_sec: 300.0
+    sim_stall_timeout_sec: 10.0
+    foot_contact_freshness_timeout_sec: 2.0
 
     # Fixed protocol. Distances are normalized by the current symmetric trunk
     # dimensions rather than copying Eurobench's ANYmal-sized 3 m ramp.
@@ -51,10 +57,13 @@ dog2_locomotion_acceptance:
     stand_duration_sec: 5.0
     stop_duration_sec: 3.0
     settle_max_linear_speed_mps: 0.05
-    settle_max_yaw_rate_radps: 0.10
+    settle_max_vertical_speed_mps: 0.05
+    settle_max_angular_speed_radps: 0.15
+    stand_max_drift_m: 0.02
+    turn_final_tolerance_rad: 0.15
 
-    # REFERENCE_HARD: Isaac Lab / legged_gym illegal-contact convention.
-    illegal_contact_force_n: 1.0
+    # Contact presence itself is the illegal-contact hard gate. Force is
+    # retained only as optional evidence because Fortress may omit wrenches.
     # PROJECT_SAFETY: rejects the observed old-smoke flip/sideways false PASS.
     max_tilt_rad: 0.55
     min_up_z: 0.85252452206  # cos(0.55)
@@ -65,7 +74,19 @@ dog2_locomotion_acceptance:
     enforce_tibia_contact: true
 
     ground_z_m: 0.0
+    # Fallbacks used only before robot_description is available. Runtime
+    # scoring derives these values from the expanded URDF under test.
     foot_radius_m: 0.012
+
+    # Reliability policy: no formal locomotion PASS until these thresholds
+    # have been fitted and reviewed using labeled positive/negative trials.
+    calibration_status: provisional
+    calibration_profile_id: uncalibrated
+    max_straight_heading_error_rad: -1.0
+    max_linear_velocity_error_rms_mps: -1.0
+    max_contact_mismatch_ratio: -1.0
+    max_stance_slip_per_base_path: -1.0
+    min_swing_peak_clearance_m: -1.0
 
     result_json: /tmp/dog2_locomotion_acceptance/trial_001.json
     samples_csv: /tmp/dog2_locomotion_acceptance/trial_001_samples.csv

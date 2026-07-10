@@ -11,6 +11,9 @@
 
   <xacro:arg name="controllers_yaml" default="$(find dog2_description)/config/ros2_controllers.yaml"/>
   <xacro:arg name="robot_param_node" default="robot_state_publisher"/>
+  <!-- Instrumentation only: adds Gazebo contact sensors without changing links,
+       joints, geometry, inertia, limits, or ros2_control interfaces. -->
+  <xacro:arg name="enable_acceptance_contact_sensors" default="false"/>
   <xacro:property name="controllers_yaml" value="$(arg controllers_yaml)"/>
   <xacro:property name="robot_param_node" value="$(arg robot_param_node)"/>
 
@@ -60,6 +63,19 @@
     </visual>
   </link>
 
+  <xacro:if value="$(arg enable_acceptance_contact_sensors)">
+    <gazebo reference="base_link">
+      <sensor name="base_acceptance_contact" type="contact">
+        <always_on>true</always_on>
+        <update_rate>200</update_rate>
+        <contact>
+          <collision>base_link_collision</collision>
+          <topic>/dog2/gz_contact/base</topic>
+        </contact>
+      </sensor>
+    </gazebo>
+  </xacro:if>
+
   <!-- Leg topology macro. This include must stay before the four xacro:leg instantiations. -->
   <xacro:include filename="$(find dog2_description)/urdf/dog2_leg_macro.xacro"/>
 
@@ -103,23 +119,27 @@
 
   <xacro:leg prefix="lf" side="left" leg_num="1" parent_link="lf_leg_mount" rail_axis="${leg_rail_axis_L}" p_low="0.0" p_up="0.111"
              thigh_xyz="${leg12_thigh_xyz}" shin_xyz="${leg12_shin_xyz}" slider_inertia_xyz="${l1_inertia_xyz}"
-             foot_tip_xyz="${leg12_foot_tip_xyz}"/>
+             foot_tip_xyz="${leg12_foot_tip_xyz}"
+             enable_acceptance_contact_sensors="$(arg enable_acceptance_contact_sensors)"/>
 
   <xacro:leg prefix="lh" side="left" leg_num="2" parent_link="lh_leg_mount" rail_axis="${leg_rail_axis_L}" p_low="-0.111" p_up="0.0"
              thigh_xyz="${leg12_thigh_xyz}" shin_xyz="${leg12_shin_xyz}" slider_inertia_xyz="${l2_inertia_xyz}"
              hip_xyz="0.016 0.0199 0.055"
-             foot_tip_xyz="${leg12_foot_tip_xyz}"/>
+             foot_tip_xyz="${leg12_foot_tip_xyz}"
+             enable_acceptance_contact_sensors="$(arg enable_acceptance_contact_sensors)"/>
 
   <xacro:leg prefix="rh" side="right" leg_num="3" parent_link="rh_leg_mount" rail_axis="${leg_rail_axis_R}" p_low="-0.111" p_up="0.0"
              thigh_xyz="${leg3_thigh_xyz}" shin_xyz="${leg3_shin_xyz}" slider_inertia_xyz="${l3_inertia_xyz}"
              knee_xyz="${leg_knee_xyz_R}"
-             foot_tip_xyz="${leg3_foot_tip_xyz}"/>
+             foot_tip_xyz="${leg3_foot_tip_xyz}"
+             enable_acceptance_contact_sensors="$(arg enable_acceptance_contact_sensors)"/>
 
   <!-- Front-right retains its measured hip mount offset; the rest of the chain follows the shared contract. -->
   <xacro:leg prefix="rf" side="right" leg_num="4" parent_link="rf_leg_mount" rail_axis="${leg_rail_axis_R}" p_low="0.0" p_up="0.111"
              thigh_xyz="${leg4_thigh_xyz}" shin_xyz="${leg4_shin_xyz}" slider_inertia_xyz="${l4_inertia_xyz}"
              hip_xyz="0.0116 0.0199 0.055" knee_xyz="${leg_knee_xyz_R}"
-             foot_tip_xyz="${leg4_foot_tip_xyz}"/>
+             foot_tip_xyz="${leg4_foot_tip_xyz}"
+             enable_acceptance_contact_sensors="$(arg enable_acceptance_contact_sensors)"/>
 
   <xacro:include filename="$(find dog2_description)/urdf/dog2_ros2_control.xacro"/>
   <xacro:dog2_ros2_control controllers_yaml="${controllers_yaml}" robot_param_node="${robot_param_node}"/>

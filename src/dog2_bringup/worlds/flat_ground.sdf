@@ -17,6 +17,11 @@
     <plugin
       filename="gz-sim-scene-broadcaster-system"
       name="gz::sim::systems::SceneBroadcaster"/>
+    <!-- Required by the LAV1 foot/base/tibia contact sensors. This publishes
+         contact observations only; it does not change collision dynamics. -->
+    <plugin
+      filename="gz-sim-contact-system"
+      name="gz::sim::systems::Contact"/>
 
     <light type="directional" name="sun">
       <cast_shadows>true</cast_shadows>

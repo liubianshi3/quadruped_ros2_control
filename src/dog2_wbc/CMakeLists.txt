@@ -57,6 +57,25 @@ ament_target_dependencies(wbc_node_complete
   dog2_dynamics
 )
 
+# Flat-ground WBC entrypoint. It keeps the verified URDF Jacobian/gravity
+# implementation while removing crossing/posture-bias branches.
+add_executable(flat_wbc_node
+  src/flat_wbc_node.cpp
+)
+target_link_libraries(flat_wbc_node
+  wbc_controller
+  pinocchio::pinocchio
+)
+ament_target_dependencies(flat_wbc_node
+  rclcpp
+  std_msgs
+  sensor_msgs
+  nav_msgs
+  dog2_interfaces
+  Eigen3
+  dog2_dynamics
+)
+
 # Install libraries
 install(TARGETS wbc_controller
   ARCHIVE DESTINATION lib
@@ -65,7 +84,7 @@ install(TARGETS wbc_controller
 )
 
 # Install executables
-install(TARGETS wbc_node_complete
+install(TARGETS wbc_node_complete flat_wbc_node
   DESTINATION lib/${PROJECT_NAME}
 )
 

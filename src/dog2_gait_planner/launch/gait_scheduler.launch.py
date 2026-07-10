@@ -2,8 +2,14 @@
 
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
-from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
+from launch.substitutions import (
+    Command,
+    LaunchConfiguration,
+    PathJoinSubstitution,
+    PythonExpression,
+)
 from launch_ros.actions import Node
+from launch_ros.parameter_descriptions import ParameterValue
 from launch_ros.substitutions import FindPackageShare
 
 
@@ -11,6 +17,18 @@ def generate_launch_description() -> LaunchDescription:
     config = PathJoinSubstitution(
         [FindPackageShare("dog2_gait_planner"), "config", "gait_scheduler.yaml"]
     )
+    model_variant = LaunchConfiguration("model_variant")
+    xacro_filename = PythonExpression(
+        [
+            "'dog2_symmetric.urdf.xacro' if '",
+            model_variant,
+            "' == 'symmetric' else 'dog2.urdf.xacro'",
+        ]
+    )
+    xacro_file = PathJoinSubstitution(
+        [FindPackageShare("dog2_description"), "urdf", xacro_filename]
+    )
+    robot_description = ParameterValue(Command(["xacro ", xacro_file]), value_type=str)
     return LaunchDescription(
         [
             # Named uniquely on purpose: launch configurations are GLOBAL
@@ -21,6 +39,11 @@ def generate_launch_description() -> LaunchDescription:
             # section), so the scheduler ran on hardcoded defaults.
             DeclareLaunchArgument("gait_scheduler_config", default_value=config),
             DeclareLaunchArgument("use_sim_time", default_value="true"),
+            DeclareLaunchArgument(
+                "model_variant",
+                default_value="symmetric",
+                choices=["real", "symmetric"],
+            ),
             Node(
                 package="dog2_gait_planner",
                 executable="gait_scheduler_node.py",
@@ -43,9 +66,9 @@ def generate_launch_description() -> LaunchDescription:
                         # bezier swing timing assumes the swing window is
                         # this fraction of the cycle.
                         "swing_fraction": 0.25,
-                        # 0.15 s swing window at cycle 0.6: 4 cm apex keeps
-                        # peak foot speed reasonable while clearing ground.
-                        "swing_height": 0.04,
+                        # The crawl lifts vertically before translating, so
+                        # 5 cm clears the foot without dragging it sideways.
+                        "swing_height": 0.05,
                         # 5 mm ground-search only. 2 cm pressed the "swing"
                         # foot into the ground with the full task PD holding
                         # it at a BODY-frame target: a stiff rubber band
@@ -53,6 +76,15 @@ def generate_launch_description() -> LaunchDescription:
                         # (runs 57-61: fx +20 N sustained, zero net motion;
                         # run52 without overshoot walked 0.97 m).
                         "touchdown_overshoot": 0.005,
+                        # Keep crawl touchdowns at the COM-centred nominal.
+                        # A full three-slot lead moved both front feet 6 cm
+                        # ahead before either hind leg could unload, leaving
+                        # the COM on the LF-RH support edge (about 2 N margin).
+                        "crawl_velocity_lead_sec": 0.0,
+                        # Latch every swing from measured FK rather than the
+                        # previous nominal command. This prevents a target
+                        # discontinuity from pinning the foot to the ground.
+                        "robot_description": robot_description,
                     },
                 ],
             ),

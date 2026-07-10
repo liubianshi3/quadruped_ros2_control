@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import csv
+import json
 import math
 import os
 import platform
@@ -11,6 +12,7 @@ import tempfile
 import threading
 import time
 import xml.etree.ElementTree as ET
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, Optional, Tuple
 
@@ -39,10 +41,28 @@ from dog2_bringup.acceptance_metrics import (
     body_velocity_from_world,
     level_from_quaternion,
     parse_joint_limits,
+    parse_robot_model_metadata,
+    pose_kinematics,
     route_coordinates,
+    sha256_file,
+    sha256_text,
     transform_point,
     wrap_angle,
     yaw_from_quaternion,
+)
+from dog2_bringup.acceptance_oracle import (
+    GateFailure,
+    MotionGateLimits,
+    MotionObservation,
+    StabilityLimits,
+    assess_turn,
+    completion_outcome,
+    evaluate_joint_hard_gates,
+    evaluate_motion_hard_gates,
+    is_stable,
+    is_valid_stage_transition,
+    latch_illegal_contact,
+    stand_drift_failure,
 )
 
 
@@ -60,6 +80,7 @@ class LocomotionAcceptanceNode(Node):
     PARAMETER_DEFAULTS = {
         "protocol_id": "dog2_lav1_flat",
         "trial_id": "trial_001",
+        "run_uuid": "manual",
         "model_variant": "symmetric",
         "controller_mode": "effort_research",
         "odom_topic": "/odom",
@@ -86,6 +107,9 @@ class LocomotionAcceptanceNode(Node):
         "wait_ready_timeout_sec": 60.0,
         "wait_settle_timeout_sec": 45.0,
         "total_timeout_sec": 180.0,
+        "wall_watchdog_timeout_sec": 300.0,
+        "sim_stall_timeout_sec": 10.0,
+        "foot_contact_freshness_timeout_sec": 2.0,
         "body_length_m": 0.342,
         "body_width_m": 0.160,
         "robot_mass_kg": 12.0028,
@@ -101,8 +125,10 @@ class LocomotionAcceptanceNode(Node):
         "stand_duration_sec": 5.0,
         "stop_duration_sec": 3.0,
         "settle_max_linear_speed_mps": 0.05,
-        "settle_max_yaw_rate_radps": 0.10,
-        "illegal_contact_force_n": 1.0,
+        "settle_max_vertical_speed_mps": 0.05,
+        "settle_max_angular_speed_radps": 0.15,
+        "stand_max_drift_m": 0.02,
+        "turn_final_tolerance_rad": 0.15,
         "max_tilt_rad": 0.55,
         "min_up_z": math.cos(0.55),
         "body_height_min_m": 0.12,
@@ -111,6 +137,13 @@ class LocomotionAcceptanceNode(Node):
         "enforce_tibia_contact": True,
         "ground_z_m": 0.0,
         "foot_radius_m": 0.012,
+        "calibration_status": "provisional",
+        "calibration_profile_id": "uncalibrated",
+        "max_straight_heading_error_rad": -1.0,
+        "max_linear_velocity_error_rms_mps": -1.0,
+        "max_contact_mismatch_ratio": -1.0,
+        "max_stance_slip_per_base_path": -1.0,
+        "min_swing_peak_clearance_m": -1.0,
         "result_json": "/tmp/dog2_locomotion_acceptance/trial_001.json",
         "samples_csv": "/tmp/dog2_locomotion_acceptance/trial_001_samples.csv",
         "junit_xml": "/tmp/dog2_locomotion_acceptance/trial_001.junit.xml",
@@ -135,15 +168,23 @@ class LocomotionAcceptanceNode(Node):
             name: self.get_parameter(name).value for name in self.PARAMETER_DEFAULTS
         }
         self._start_wall_sec = time.monotonic()
+        self._start_utc = datetime.now(timezone.utc).isoformat()
         self._ready_deadline = self._start_wall_sec + self._float("wait_ready_timeout_sec")
-        self._total_deadline = self._start_wall_sec + self._float("total_timeout_sec")
+        self._wall_watchdog_deadline = (
+            self._start_wall_sec + self._float("wall_watchdog_timeout_sec")
+        )
         self._stage = "WAIT_READY"
         self._stage_start_sec = self._start_wall_sec
+        self._stage_start_wall_sec = self._start_wall_sec
+        self._stage_clock = "wall"
         self._stage_deadline_sec: Optional[float] = self._ready_deadline
         self._stage_records: list[dict] = []
         self._stable_since: Optional[float] = None
         self._done = False
         self._score_start_sec: Optional[float] = None
+        self._score_start_wall_sec: Optional[float] = None
+        self._latest_sim_sec: Optional[float] = None
+        self._last_sim_advance_wall_sec: Optional[float] = None
         self._failure: Optional[dict] = None
 
         self._last_stream_sec: Dict[str, Optional[float]] = {
@@ -175,7 +216,9 @@ class LocomotionAcceptanceNode(Node):
         }
 
         self._latest_pose: Optional[dict] = None
+        self._odom_frame_contract_valid = False
         self._last_odom_stamp_sec: Optional[float] = None
+        self._previous_pose_sample: Optional[dict] = None
         self._last_base_xy: Optional[Tuple[float, float]] = None
         self._raw_yaw_prev: Optional[float] = None
         self._unwrapped_yaw = 0.0
@@ -183,13 +226,23 @@ class LocomotionAcceptanceNode(Node):
         self._joint_velocities: Dict[str, float] = {}
         self._effort_commands: Dict[str, float] = {}
         self._joint_limits = {}
+        self._robot_metadata = None
+        self._robot_description_hash: Optional[str] = None
         self._urdf_request = None
         self._kinematic_model = None
         self._kinematic_data = None
 
         self._foot_contact_force = {leg: 0.0 for leg in LEG_ORDER}
+        self._foot_contact_active = {leg: False for leg in LEG_ORDER}
+        self._foot_contact_seen = {leg: False for leg in LEG_ORDER}
+        self._foot_contact_message_seen = {leg: False for leg in LEG_ORDER}
         self._tibia_contact_force = {leg: 0.0 for leg in LEG_ORDER}
+        self._tibia_contact_active = {leg: False for leg in LEG_ORDER}
         self._base_contact_force = 0.0
+        self._base_contact_active = False
+        self._illegal_contact_event: Optional[dict] = None
+        self._contact_wrench_messages = 0
+        self._contact_boolean_messages = 0
         self._planned_stance = {leg: True for leg in LEG_ORDER}
         self._foot_positions: Dict[str, Tuple[float, float, float]] = {}
         self._dynamic_pose_frame_ids: Dict[str, str] = {}
@@ -201,6 +254,7 @@ class LocomotionAcceptanceNode(Node):
         self._command_wz = 0.0
         self._route_origin: Optional[Tuple[float, float]] = None
         self._route_axis: Optional[Tuple[float, float]] = None
+        self._route_start_yaw = 0.0
         self._route_distance_m = (
             self._float("body_length_m") * self._float("route_length_body_lengths")
         )
@@ -218,6 +272,8 @@ class LocomotionAcceptanceNode(Node):
         )
         self._turn_origin: Optional[Tuple[float, float]] = None
         self._turn_start_yaw = 0.0
+        self._stand_origin: Optional[Tuple[float, float]] = None
+        self._turn_final_error_rad: Optional[float] = None
 
         self._height_stats = ScalarStats()
         self._tilt_stats = ScalarStats()
@@ -226,6 +282,8 @@ class LocomotionAcceptanceNode(Node):
         self._linear_velocity_error_stats = ScalarStats()
         self._lateral_velocity_error_stats = ScalarStats()
         self._yaw_rate_error_stats = ScalarStats()
+        self._heading_error_abs_stats = ScalarStats()
+        self._angular_speed_stats = ScalarStats()
         self._lateral_error_abs_stats = ScalarStats()
         self._projection_stats = ScalarStats()
         self._base_path_length_m = 0.0
@@ -241,6 +299,9 @@ class LocomotionAcceptanceNode(Node):
         self._foot_metrics = FootMetricsAccumulator(
             ground_z_m=self._float("ground_z_m"),
             foot_radius_m=self._float("foot_radius_m"),
+        )
+        self._config_hash = sha256_text(
+            json.dumps(self._params, sort_keys=True, separators=(",", ":"))
         )
         self._tf_buffer = Buffer(cache_time=Duration(seconds=5.0), node=self)
         self._tf_listener = TransformListener(
@@ -328,13 +389,20 @@ class LocomotionAcceptanceNode(Node):
         return float(self._params[name])
 
     @staticmethod
-    def _now_sec() -> float:
+    def _wall_now_sec() -> float:
         return time.monotonic()
 
     @staticmethod
     def _message_stamp_sec(sec: int, nanosec: int) -> float:
-        value = float(sec) + float(nanosec) * 1e-9
-        return value if value > 0.0 else time.monotonic()
+        return float(sec) + float(nanosec) * 1e-9
+
+    def _now_sec(self) -> float:
+        """Wall time is used only for stream freshness and watchdogs."""
+
+        return self._wall_now_sec()
+
+    def _protocol_now_sec(self) -> Optional[float]:
+        return self._latest_sim_sec
 
     def _age(self, name: str) -> float:
         stamp = self._last_stream_sec.get(name)
@@ -350,9 +418,14 @@ class LocomotionAcceptanceNode(Node):
             return 0.0
         return recorded_force
 
-    def _current_foot_force(self, leg: str) -> float:
-        return self._event_force(
-            f"foot_contact_{leg}", self._foot_contact_force[leg]
+    def _event_active(self, stream_name: str, recorded_active: bool) -> bool:
+        return bool(recorded_active) and (
+            self._age(stream_name) <= self._float("contact_event_timeout_sec")
+        )
+
+    def _current_foot_contact(self, leg: str) -> bool:
+        return self._event_active(
+            f"foot_contact_{leg}", self._foot_contact_active[leg]
         )
 
     def _current_tibia_force(self, leg: str) -> float:
@@ -360,14 +433,24 @@ class LocomotionAcceptanceNode(Node):
             f"tibia_contact_{leg}", self._tibia_contact_force[leg]
         )
 
+    def _current_tibia_contact(self, leg: str) -> bool:
+        return self._event_active(
+            f"tibia_contact_{leg}", self._tibia_contact_active[leg]
+        )
+
     def _current_base_force(self) -> float:
         return self._event_force("base_contact", self._base_contact_force)
 
+    def _current_base_contact(self) -> bool:
+        return self._event_active("base_contact", self._base_contact_active)
+
     @staticmethod
-    def _contact_force_n(msg: Contacts, fallback_force_n: float) -> float:
+    def _contact_force_n(msg: Contacts) -> Tuple[float, bool]:
         maximum = 0.0
+        wrench_available = False
         for contact in msg.contacts:
             for wrench in contact.wrenches:
+                wrench_available = True
                 for body_wrench in (
                     wrench.body_1_wrench,
                     wrench.body_2_wrench,
@@ -381,30 +464,50 @@ class LocomotionAcceptanceNode(Node):
                             + float(force.z) ** 2
                         ),
                     )
-        if msg.contacts and maximum <= 0.0:
-            maximum = fallback_force_n
-        return maximum
+        return maximum, wrench_available
 
     def _on_contact(self, kind: str, leg: str, msg: Contacts) -> None:
         now = self._now_sec()
-        force = self._contact_force_n(
-            msg, self._float("illegal_contact_force_n")
-        )
+        active = bool(msg.contacts)
+        force, wrench_available = self._contact_force_n(msg)
+        if active:
+            if wrench_available:
+                self._contact_wrench_messages += 1
+            else:
+                self._contact_boolean_messages += 1
         if kind == "base":
+            self._base_contact_active = active
             self._base_contact_force = force
             self._last_stream_sec["base_contact"] = now
             self._max_base_contact_force_n = max(
                 self._max_base_contact_force_n, force
             )
         elif kind == "tibia":
+            self._tibia_contact_active[leg] = active
             self._tibia_contact_force[leg] = force
             self._last_stream_sec[f"tibia_contact_{leg}"] = now
             self._max_tibia_contact_force_n = max(
                 self._max_tibia_contact_force_n, force
             )
         else:
+            self._foot_contact_message_seen[leg] = True
+            self._foot_contact_seen[leg] |= active
+            self._foot_contact_active[leg] = active
             self._foot_contact_force[leg] = force
             self._last_stream_sec[f"foot_contact_{leg}"] = now
+
+        self._illegal_contact_event = latch_illegal_contact(
+            self._illegal_contact_event,
+            active=active,
+            scored=self._stage in self.SCORED_STAGES,
+            kind=kind,
+            leg=leg,
+            force_n=force,
+            wrench_available=wrench_available,
+            wall_time_sec=now - self._start_wall_sec,
+            sim_time_sec=self._latest_sim_sec,
+            stage=self._stage,
+        )
 
     def _on_contact_phase(self, msg: ContactPhase) -> None:
         mapping = {}
@@ -554,13 +657,19 @@ class LocomotionAcceptanceNode(Node):
         self._foot_position_source = source
         self._last_stream_sec["foot_world_pose"] = self._now_sec()
         if self._stage in self.SCORED_STAGES:
-            threshold = self._float("illegal_contact_force_n")
             actual = {
-                leg: self._current_foot_force(leg) >= threshold
+                leg: self._current_foot_contact(leg)
                 for leg in LEG_ORDER
             }
+            metric_stamp = (
+                stamp_sec
+                if math.isfinite(stamp_sec) and stamp_sec > 0.0
+                else self._latest_sim_sec
+            )
+            if metric_stamp is None:
+                return
             self._foot_metrics.update(
-                stamp_sec,
+                metric_stamp,
                 positions,
                 actual,
                 self._planned_stance,
@@ -591,7 +700,7 @@ class LocomotionAcceptanceNode(Node):
                             leg_name: f"{target_frame}->base_link+pinocchio->{leg_name}_foot_link"
                             for leg_name in LEG_ORDER
                         },
-                        self._now_sec(),
+                        self._latest_sim_sec or 0.0,
                         source="gazebo_odom+joint_state_pinocchio",
                     )
                     return
@@ -609,7 +718,7 @@ class LocomotionAcceptanceNode(Node):
         self._accept_foot_positions(
             positions,
             frame_ids,
-            self._now_sec(),
+            self._latest_sim_sec or 0.0,
             source="tf_kinematic_fallback",
         )
 
@@ -669,13 +778,75 @@ class LocomotionAcceptanceNode(Node):
         pose = msg.pose.pose
         twist = msg.twist.twist
         q = pose.orientation
+        expected_world = str(self._params["foot_world_frame"]).lstrip("/")
+        actual_world = str(msg.header.frame_id).lstrip("/")
+        actual_child = str(msg.child_frame_id).lstrip("/")
+        self._odom_frame_contract_valid = (
+            actual_world == expected_world
+            and (
+                actual_child == "base_link"
+                or actual_child.endswith("/base_link")
+                or actual_child.endswith("::base_link")
+            )
+        )
+        stamp_sec = self._message_stamp_sec(
+            msg.header.stamp.sec, msg.header.stamp.nanosec
+        )
+        if stamp_sec > 0.0 and (
+            self._latest_sim_sec is None or stamp_sec > self._latest_sim_sec + 1e-9
+        ):
+            self._latest_sim_sec = stamp_sec
+            self._last_sim_advance_wall_sec = now
+
         yaw = yaw_from_quaternion(q.x, q.y, q.z, q.w)
         roll_like, pitch_like, tilt, up_z = level_from_quaternion(
             q.x, q.y, q.z, q.w
         )
+        current_xyz = (
+            float(pose.position.x),
+            float(pose.position.y),
+            float(pose.position.z),
+        )
+        current_quaternion = (
+            float(q.x),
+            float(q.y),
+            float(q.z),
+            float(q.w),
+        )
+        dt = 0.0
+        vx_world = 0.0
+        vy_world = 0.0
+        vz_world = 0.0
+        yaw_rate = 0.0
+        angular_speed = 0.0
+        previous = self._previous_pose_sample
+        if previous is not None and stamp_sec > 0.0:
+            candidate = stamp_sec - float(previous["stamp_sec"])
+            if 0.0 < candidate <= 0.5:
+                dt = candidate
+                kinematics = pose_kinematics(
+                    previous["xyz"],
+                    previous["quaternion"],
+                    current_xyz,
+                    current_quaternion,
+                    dt,
+                )
+                vx_world = kinematics.vx_world_mps
+                vy_world = kinematics.vy_world_mps
+                vz_world = kinematics.vz_world_mps
+                yaw_rate = kinematics.yaw_rate_radps
+                angular_speed = kinematics.angular_speed_radps
+        if stamp_sec > 0.0 and (
+            previous is None or stamp_sec > float(previous["stamp_sec"])
+        ):
+            self._previous_pose_sample = {
+                "stamp_sec": stamp_sec,
+                "xyz": current_xyz,
+                "quaternion": current_quaternion,
+            }
         vx_body, vy_body = body_velocity_from_world(
-            twist.linear.x,
-            twist.linear.y,
+            vx_world,
+            vy_world,
             yaw,
         )
         if self._raw_yaw_prev is None:
@@ -695,15 +866,11 @@ class LocomotionAcceptanceNode(Node):
                 self._route_axis[0],
                 self._route_axis[1],
             )
-
-        stamp_sec = self._message_stamp_sec(
-            msg.header.stamp.sec, msg.header.stamp.nanosec
+        heading_error = (
+            0.0
+            if self._route_origin is None
+            else wrap_angle(yaw - self._route_start_yaw)
         )
-        dt = 0.0
-        if self._last_odom_stamp_sec is not None:
-            candidate = stamp_sec - self._last_odom_stamp_sec
-            if 0.0 < candidate <= 0.25:
-                dt = candidate
         self._last_odom_stamp_sec = stamp_sec
 
         self._latest_pose = {
@@ -724,24 +891,42 @@ class LocomotionAcceptanceNode(Node):
             "up_z": up_z,
             "vx_body": vx_body,
             "vy_body": vy_body,
-            "vz": float(twist.linear.z),
-            "wz": float(twist.angular.z),
+            "vz": vz_world,
+            "wz": yaw_rate,
+            "angular_speed": angular_speed,
+            "heading_error": heading_error,
             "projection": projection,
             "lateral": lateral,
+            "sim_stamp_sec": stamp_sec,
+            "reported_twist": {
+                "linear": [
+                    float(twist.linear.x),
+                    float(twist.linear.y),
+                    float(twist.linear.z),
+                ],
+                "angular": [
+                    float(twist.angular.x),
+                    float(twist.angular.y),
+                    float(twist.angular.z),
+                ],
+            },
         }
         self._last_stream_sec["odom"] = now
 
-        if self._stage not in self.SCORED_STAGES:
+        if self._stage not in self.SCORED_STAGES or dt <= 0.0:
             self._last_base_xy = (pose.position.x, pose.position.y)
             return
 
         self._height_stats.update(pose.position.z)
         self._tilt_stats.update(tilt)
         self._up_z_stats.update(up_z)
-        self._vertical_velocity_stats.update(twist.linear.z)
+        self._vertical_velocity_stats.update(vz_world)
         self._linear_velocity_error_stats.update(vx_body - self._command_vx)
         self._lateral_velocity_error_stats.update(vy_body)
-        self._yaw_rate_error_stats.update(twist.angular.z - self._command_wz)
+        self._yaw_rate_error_stats.update(yaw_rate - self._command_wz)
+        if self._stage in {"OUTBOUND", "OUTBOUND_STOP", "RETURN", "RETURN_STOP"}:
+            self._heading_error_abs_stats.update(abs(heading_error))
+        self._angular_speed_stats.update(angular_speed)
         self._lateral_error_abs_stats.update(abs(lateral))
         self._projection_stats.update(projection)
 
@@ -761,15 +946,15 @@ class LocomotionAcceptanceNode(Node):
 
         if now - self._last_sample_wall_sec >= self._float("poll_period_sec"):
             self._last_sample_wall_sec = now
-            self._samples.append(self._sample_row(now))
+            self._samples.append(self._sample_row(stamp_sec))
 
-    def _sample_row(self, now: float) -> dict:
+    def _sample_row(self, sim_now: float) -> dict:
         pose = self._latest_pose or {}
         row = {
             "time_sec": (
                 0.0
                 if self._score_start_sec is None
-                else max(0.0, now - self._score_start_sec)
+                else max(0.0, sim_now - self._score_start_sec)
             ),
             "stage": self._stage,
             "cmd_vx_mps": self._command_vx,
@@ -785,6 +970,8 @@ class LocomotionAcceptanceNode(Node):
             "vy_body_mps": pose.get("vy_body"),
             "vz_mps": pose.get("vz"),
             "wz_radps": pose.get("wz"),
+            "angular_speed_radps": pose.get("angular_speed"),
+            "heading_error_rad": pose.get("heading_error"),
             "route_projection_m": pose.get("projection"),
             "lateral_error_m": pose.get("lateral"),
             "rail_error_max_m": self._current_rail_error(),
@@ -794,10 +981,7 @@ class LocomotionAcceptanceNode(Node):
             ),
         }
         for leg in LEG_ORDER:
-            row[f"{leg}_foot_contact"] = int(
-                self._current_foot_force(leg)
-                >= self._float("illegal_contact_force_n")
-            )
+            row[f"{leg}_foot_contact"] = int(self._current_foot_contact(leg))
             row[f"{leg}_planned_stance"] = int(self._planned_stance[leg])
         return row
 
@@ -819,23 +1003,62 @@ class LocomotionAcceptanceNode(Node):
             response = self._urdf_request.result()
             description = response.values[0].string_value
             joint_limits = parse_joint_limits(description)
+            metadata = parse_robot_model_metadata(description)
             kinematic_model = pin.buildModelFromXML(description)
             expected = set(RAIL_JOINT_NAMES + REVOLUTE_JOINT_NAMES)
             missing = sorted(expected - set(joint_limits))
             if missing:
                 raise ValueError(f"URDF missing movable joints: {missing}")
             self._joint_limits = joint_limits
+            self._robot_metadata = metadata
+            self._robot_description_hash = sha256_text(description)
             self._kinematic_model = kinematic_model
             self._kinematic_data = kinematic_model.createData()
+            self._route_distance_m = (
+                metadata.body_length_m * self._float("route_length_body_lengths")
+            )
+            self._corridor_half_width_m = (
+                metadata.body_width_m
+                * self._float("corridor_half_width_body_widths")
+            )
+            self._return_tolerance_m = (
+                metadata.body_length_m
+                * self._float("return_tolerance_body_lengths")
+            )
+            self._turn_translation_limit_m = (
+                metadata.body_length_m
+                * self._float("turn_translation_limit_body_lengths")
+            )
+            self._foot_metrics = FootMetricsAccumulator(
+                ground_z_m=self._float("ground_z_m"),
+                foot_radius_m=metadata.foot_radius_m,
+            )
             self.get_logger().info(
-                f"Loaded {len(self._joint_limits)} movable-joint hard limits"
+                f"Loaded {len(self._joint_limits)} movable-joint hard limits; "
+                f"mass={metadata.total_mass_kg:.4f}kg "
+                f"foot_radius={metadata.foot_radius_m:.4f}m"
             )
             self._urdf_request = None
         except Exception as exc:
             self._urdf_request = None
             self.get_logger().warn(f"Could not read robot_description yet: {exc}")
 
-    def _required_streams_missing(self) -> list[str]:
+    def _contact_health_missing(self, *, require_recent: bool) -> list[str]:
+        missing = []
+        for leg in LEG_ORDER:
+            if not self._foot_contact_message_seen[leg]:
+                missing.append(f"foot_contact_{leg}_no_messages")
+            elif not self._foot_contact_seen[leg]:
+                missing.append(f"foot_contact_{leg}_never_active")
+            elif require_recent and self._age(f"foot_contact_{leg}") > self._float(
+                "foot_contact_freshness_timeout_sec"
+            ):
+                missing.append(f"foot_contact_{leg}_stale")
+        return missing
+
+    def _required_streams_missing(
+        self, *, require_contact_health: bool = False
+    ) -> list[str]:
         names = [
             "odom",
             "foot_world_pose",
@@ -851,8 +1074,19 @@ class LocomotionAcceptanceNode(Node):
         )
         if not self._joint_limits:
             missing.append("robot_description")
+        if self._latest_sim_sec is None:
+            missing.append("simulation_clock")
+        if not self._odom_frame_contract_valid:
+            missing.append("odom_frame_contract")
         if set(self._foot_positions) != set(LEG_ORDER):
             missing.append("world_foot_positions")
+        expected_joints = set(RAIL_JOINT_NAMES + REVOLUTE_JOINT_NAMES)
+        if not expected_joints.issubset(self._joint_positions):
+            missing.append("joint_positions_complete")
+        if not expected_joints.issubset(self._joint_velocities):
+            missing.append("joint_velocities_complete")
+        if require_contact_health:
+            missing.extend(self._contact_health_missing(require_recent=True))
         return missing
 
     def _publish_command(self, vx: float, wz: float) -> None:
@@ -866,9 +1100,34 @@ class LocomotionAcceptanceNode(Node):
     def _begin_stage(
         self, stage: str, *, timeout_sec: Optional[float] = None
     ) -> None:
-        now = self._now_sec()
-        self._close_stage(now)
+        if not is_valid_stage_transition(self._stage, stage):
+            self._fail(
+                "INVALID_STAGE_TRANSITION",
+                f"invalid protocol transition {self._stage}->{stage}",
+                infrastructure=True,
+                measured=[self._stage, stage],
+                provenance="TEST_INFRASTRUCTURE",
+            )
+            return
+        wall_now = self._now_sec()
+        self._close_stage()
         self._stage = stage
+        self._stage_start_wall_sec = wall_now
+        if stage.startswith("WAIT_"):
+            self._stage_clock = "wall"
+            now = wall_now
+        else:
+            self._stage_clock = "simulation"
+            sim_now = self._protocol_now_sec()
+            if sim_now is None:
+                self._fail(
+                    "SIM_TIME_UNAVAILABLE",
+                    "simulation clock unavailable at scored stage transition",
+                    infrastructure=True,
+                    provenance="TEST_INFRASTRUCTURE",
+                )
+                return
+            now = sim_now
         self._stage_start_sec = now
         self._stage_deadline_sec = (
             None if timeout_sec is None else now + max(0.1, timeout_sec)
@@ -876,18 +1135,31 @@ class LocomotionAcceptanceNode(Node):
         self._stable_since = None
         self.get_logger().info(f"LAV1 stage={stage}")
 
-    def _close_stage(self, now: Optional[float] = None) -> None:
+    def _close_stage(self) -> None:
         if not self._stage:
             return
-        now = self._now_sec() if now is None else now
         if self._stage_records and self._stage_records[-1].get("stage") == self._stage:
             return
+        wall_now = self._now_sec()
+        sim_now = self._protocol_now_sec()
+        if self._stage_clock == "simulation" and sim_now is not None:
+            duration = max(0.0, sim_now - self._stage_start_sec)
+        else:
+            duration = max(0.0, wall_now - self._stage_start_sec)
         self._stage_records.append(
             {
                 "stage": self._stage,
-                "start_wall_sec": self._stage_start_sec - self._start_wall_sec,
-                "end_wall_sec": now - self._start_wall_sec,
-                "duration_sec": max(0.0, now - self._stage_start_sec),
+                "clock": self._stage_clock,
+                "start_wall_sec": self._stage_start_wall_sec
+                - self._start_wall_sec,
+                "end_wall_sec": wall_now - self._start_wall_sec,
+                "start_sim_sec": (
+                    self._stage_start_sec
+                    if self._stage_clock == "simulation"
+                    else None
+                ),
+                "end_sim_sec": sim_now,
+                "duration_sec": duration,
             }
         )
 
@@ -896,34 +1168,66 @@ class LocomotionAcceptanceNode(Node):
             return math.inf
         return max(abs(self._joint_positions[name]) for name in RAIL_JOINT_NAMES)
 
-    def _is_stable(self) -> bool:
+    def _motion_gate_limits(self) -> MotionGateLimits:
+        return MotionGateLimits(
+            max_tilt_rad=self._float("max_tilt_rad"),
+            min_up_z=self._float("min_up_z"),
+            body_height_min_m=self._float("body_height_min_m"),
+            body_height_max_m=self._float("body_height_max_m"),
+            max_rail_error_m=self._float("max_rail_lock_error_m"),
+            corridor_half_width_m=self._corridor_half_width_m,
+            enforce_tibia_contact=bool(self._params["enforce_tibia_contact"]),
+        )
+
+    def _motion_observation(self) -> Optional[MotionObservation]:
         pose = self._latest_pose
         if pose is None:
-            return False
-        speed = math.hypot(pose["vx_body"], pose["vy_body"])
-        no_illegal_contact = (
-            self._current_base_force() < self._float("illegal_contact_force_n")
-            and (
-                not bool(self._params["enforce_tibia_contact"])
-                or max(self._current_tibia_force(leg) for leg in LEG_ORDER)
-                < self._float("illegal_contact_force_n")
-            )
+            return None
+        return MotionObservation(
+            x_m=float(pose["x"]),
+            y_m=float(pose["y"]),
+            z_m=float(pose["z"]),
+            yaw_rad=float(pose["yaw"]),
+            tilt_rad=float(pose["tilt"]),
+            up_z=float(pose["up_z"]),
+            vx_body_mps=float(pose["vx_body"]),
+            vy_body_mps=float(pose["vy_body"]),
+            vz_mps=float(pose["vz"]),
+            yaw_rate_radps=float(pose["wz"]),
+            angular_speed_radps=float(pose["angular_speed"]),
+            lateral_error_m=float(pose["lateral"]),
+            rail_error_m=self._current_rail_error(),
+            base_contact=self._current_base_contact(),
+            tibia_contact_legs=tuple(
+                leg for leg in LEG_ORDER if self._current_tibia_contact(leg)
+            ),
         )
-        return (
-            no_illegal_contact
-            and speed <= self._float("settle_max_linear_speed_mps")
-            and abs(pose["wz"]) <= self._float("settle_max_yaw_rate_radps")
-            and pose["tilt"] <= self._float("max_tilt_rad")
-            and pose["up_z"] >= self._float("min_up_z")
-            and self._float("body_height_min_m")
-            <= pose["z"]
-            <= self._float("body_height_max_m")
-            and self._current_rail_error()
-            <= self._float("max_rail_lock_error_m")
+
+    def _is_stable(self) -> bool:
+        observation = self._motion_observation()
+        if observation is None:
+            return False
+        return is_stable(
+            observation,
+            self._motion_gate_limits(),
+            StabilityLimits(
+                max_planar_speed_mps=self._float(
+                    "settle_max_linear_speed_mps"
+                ),
+                max_vertical_speed_mps=self._float(
+                    "settle_max_vertical_speed_mps"
+                ),
+                max_angular_speed_radps=self._float(
+                    "settle_max_angular_speed_radps"
+                ),
+            ),
         )
 
     def _stable_for(self, duration_sec: float) -> bool:
-        now = self._now_sec()
+        now = self._protocol_now_sec()
+        if now is None:
+            self._stable_since = None
+            return False
         if self._is_stable():
             if self._stable_since is None:
                 self._stable_since = now
@@ -947,7 +1251,8 @@ class LocomotionAcceptanceNode(Node):
             "code": code,
             "message": message,
             "stage": self._stage,
-            "time_sec": self._now_sec() - self._start_wall_sec,
+            "wall_time_sec": self._now_sec() - self._start_wall_sec,
+            "sim_time_sec": self._latest_sim_sec,
             "measured": measured,
             "limit": limit,
             "provenance": provenance,
@@ -955,8 +1260,18 @@ class LocomotionAcceptanceNode(Node):
         status = "FAIL_INFRASTRUCTURE" if infrastructure else "FAIL_LOCOMOTION"
         self._finish(False, status, message)
 
+    def _fail_gate(self, failure: GateFailure) -> None:
+        self._fail(
+            failure.code,
+            failure.message,
+            infrastructure=failure.infrastructure,
+            measured=failure.measured,
+            limit=failure.limit,
+            provenance=failure.provenance,
+        )
+
     def _check_hard_gates(self) -> bool:
-        missing = self._required_streams_missing()
+        missing = self._required_streams_missing(require_contact_health=True)
         if missing:
             self._fail(
                 "STALE_GROUND_TRUTH",
@@ -968,178 +1283,61 @@ class LocomotionAcceptanceNode(Node):
             )
             return False
 
-        pose = self._latest_pose
-        assert pose is not None
-        finite_values = [
-            pose[key]
-            for key in (
-                "x",
-                "y",
-                "z",
-                "yaw",
-                "tilt",
-                "up_z",
-                "vx_body",
-                "vy_body",
-                "wz",
-            )
-        ]
-        if not all(math.isfinite(value) for value in finite_values):
+        if self._illegal_contact_event is not None:
+            event = self._illegal_contact_event
+            kind = str(event["kind"])
             self._fail(
-                "NONFINITE_STATE",
-                "non-finite Gazebo ground-truth state",
-                measured=finite_values,
-                provenance="PHYSICAL_HARD",
-            )
-            return False
-
-        threshold = self._float("illegal_contact_force_n")
-        base_force = self._current_base_force()
-        if base_force >= threshold:
-            self._fail(
-                "BASE_CONTACT",
-                "base_link made illegal contact",
-                measured=base_force,
-                limit=threshold,
-                provenance="REFERENCE_HARD",
-            )
-            return False
-        if bool(self._params["enforce_tibia_contact"]):
-            leg, force = max(
+                "BASE_CONTACT" if kind == "base" else "TIBIA_CONTACT",
                 (
-                    (leg_name, self._current_tibia_force(leg_name))
-                    for leg_name in LEG_ORDER
+                    "base_link made illegal contact"
+                    if kind == "base"
+                    else f"{event['leg']}_tibia_link made illegal contact"
                 ),
-                key=lambda item: item[1],
-            )
-            if force >= threshold:
-                self._fail(
-                    "TIBIA_CONTACT",
-                    f"{leg}_tibia_link made illegal contact",
-                    measured=force,
-                    limit=threshold,
-                    provenance="PROJECT_SAFETY",
-                )
-                return False
-        if pose["tilt"] > self._float("max_tilt_rad"):
-            self._fail(
-                "TILT_LIMIT",
-                "body tilt exceeded safety limit",
-                measured=pose["tilt"],
-                limit=self._float("max_tilt_rad"),
-            )
-            return False
-        if pose["up_z"] < self._float("min_up_z"):
-            self._fail(
-                "UP_Z_LIMIT",
-                "body +Z no longer points sufficiently upward",
-                measured=pose["up_z"],
-                limit=self._float("min_up_z"),
-            )
-            return False
-        if not (
-            self._float("body_height_min_m")
-            <= pose["z"]
-            <= self._float("body_height_max_m")
-        ):
-            self._fail(
-                "BODY_HEIGHT_LIMIT",
-                "body height left the accepted band",
-                measured=pose["z"],
-                limit=[
-                    self._float("body_height_min_m"),
-                    self._float("body_height_max_m"),
-                ],
+                measured=event,
+                limit=False,
+                provenance=(
+                    "REFERENCE_HARD" if kind == "base" else "PROJECT_SAFETY"
+                ),
             )
             return False
 
-        rail_error = self._current_rail_error()
-        self._max_rail_error_m = max(self._max_rail_error_m, rail_error)
-        if rail_error > self._float("max_rail_lock_error_m"):
-            self._fail(
-                "RAIL_LOCK_ERROR",
-                "one or more prismatic rails left the zero-lock tolerance",
-                measured=rail_error,
-                limit=self._float("max_rail_lock_error_m"),
-                provenance="MISSION_REQUIREMENT",
-            )
+        observation = self._motion_observation()
+        assert observation is not None
+        self._max_rail_error_m = max(
+            self._max_rail_error_m, observation.rail_error_m
+        )
+        motion_failure = evaluate_motion_hard_gates(
+            observation,
+            self._motion_gate_limits(),
+            enforce_route_corridor=self._stage
+            in {"OUTBOUND", "OUTBOUND_STOP", "RETURN", "RETURN_STOP"},
+        )
+        if motion_failure is not None:
+            self._fail_gate(motion_failure)
             return False
 
-        for name, limit in self._joint_limits.items():
-            if name not in self._joint_positions:
-                continue
-            position = self._joint_positions[name]
-            margins = []
-            if limit.lower is not None:
-                margins.append(position - limit.lower)
-                if position < limit.lower - 1e-6:
-                    self._fail(
-                        "JOINT_POSITION_LIMIT",
-                        f"{name} is below its URDF hard limit",
-                        measured=position,
-                        limit=limit.lower,
-                        provenance="PHYSICAL_HARD",
-                    )
-                    return False
-            if limit.upper is not None:
-                margins.append(limit.upper - position)
-                if position > limit.upper + 1e-6:
-                    self._fail(
-                        "JOINT_POSITION_LIMIT",
-                        f"{name} is above its URDF hard limit",
-                        measured=position,
-                        limit=limit.upper,
-                        provenance="PHYSICAL_HARD",
-                    )
-                    return False
-            if margins:
-                self._min_joint_position_margin = min(
-                    self._min_joint_position_margin, *margins
-                )
-
-            velocity = abs(self._joint_velocities.get(name, 0.0))
-            if limit.velocity is not None and limit.velocity > 0.0:
-                ratio = velocity / limit.velocity
-                self._max_joint_velocity_ratio = max(
-                    self._max_joint_velocity_ratio, ratio
-                )
-                if ratio > 1.0 + 1e-6:
-                    self._fail(
-                        "JOINT_VELOCITY_LIMIT",
-                        f"{name} exceeded its URDF velocity limit",
-                        measured=velocity,
-                        limit=limit.velocity,
-                        provenance="PHYSICAL_HARD",
-                    )
-                    return False
-
-            effort = abs(self._effort_commands.get(name, 0.0))
-            if name in self._effort_commands and limit.effort is not None:
-                ratio = effort / max(limit.effort, 1e-12)
-                self._max_joint_effort_ratio = max(
-                    self._max_joint_effort_ratio, ratio
-                )
-                if ratio > 1.0 + 1e-6:
-                    self._fail(
-                        "JOINT_EFFORT_LIMIT",
-                        f"{name} command exceeded its URDF effort limit",
-                        measured=effort,
-                        limit=limit.effort,
-                        provenance="PHYSICAL_HARD",
-                    )
-                    return False
-
-        if (
-            self._route_origin is not None
-            and abs(pose["lateral"]) > self._corridor_half_width_m
-        ):
-            self._fail(
-                "ROUTE_CORRIDOR",
-                "body left the fixed-route lateral corridor",
-                measured=abs(pose["lateral"]),
-                limit=self._corridor_half_width_m,
-                provenance="PROJECT_SAFETY",
+        joint_evaluation = evaluate_joint_hard_gates(
+            self._joint_limits,
+            self._joint_positions,
+            self._joint_velocities,
+            self._effort_commands,
+            required_effort_names=REVOLUTE_JOINT_NAMES,
+        )
+        if joint_evaluation.minimum_position_margin is not None:
+            self._min_joint_position_margin = min(
+                self._min_joint_position_margin,
+                joint_evaluation.minimum_position_margin,
             )
+        self._max_joint_velocity_ratio = max(
+            self._max_joint_velocity_ratio,
+            joint_evaluation.maximum_velocity_ratio,
+        )
+        self._max_joint_effort_ratio = max(
+            self._max_joint_effort_ratio,
+            joint_evaluation.maximum_effort_ratio,
+        )
+        if joint_evaluation.failure is not None:
+            self._fail_gate(joint_evaluation.failure)
             return False
         return True
 
@@ -1156,25 +1354,158 @@ class LocomotionAcceptanceNode(Node):
             command_sign * math.cos(pose["yaw"]),
             command_sign * math.sin(pose["yaw"]),
         )
-        self._score_start_sec = self._now_sec()
+        self._route_start_yaw = float(pose["yaw"])
+        self._score_start_sec = self._protocol_now_sec()
+        self._score_start_wall_sec = self._now_sec()
+        if self._score_start_sec is None:
+            self._fail(
+                "SIM_TIME_UNAVAILABLE",
+                "simulation clock unavailable at protocol start",
+                infrastructure=True,
+                provenance="TEST_INFRASTRUCTURE",
+            )
+            return
         self._last_base_xy = self._route_origin
+        self._stand_origin = self._route_origin
         self._begin_stage("STAND", timeout_sec=self._float("stand_duration_sec") + 5.0)
+
+    def _quality_failures(self) -> list[GateFailure]:
+        if str(self._params["calibration_status"]).strip().lower() != "calibrated":
+            return []
+        profile_id = str(self._params["calibration_profile_id"]).strip()
+        if not profile_id or profile_id.lower() in {"none", "uncalibrated"}:
+            return [
+                GateFailure(
+                    "CALIBRATION_PROFILE_INCOMPLETE",
+                    "calibrated status requires a reviewed calibration_profile_id",
+                    measured=profile_id,
+                    provenance="TEST_INFRASTRUCTURE",
+                    infrastructure=True,
+                )
+            ]
+
+        self._foot_metrics.finish()
+        foot = self._foot_metrics.as_dict()
+        travel = max(self._base_path_length_m, 1e-9)
+        checks = [
+            (
+                "straight_heading_error_rad",
+                (
+                    self._heading_error_abs_stats.maximum
+                    if self._heading_error_abs_stats.count
+                    else None
+                ),
+                self._float("max_straight_heading_error_rad"),
+                "max",
+            ),
+            (
+                "linear_velocity_error_rms_mps",
+                self._linear_velocity_error_stats.rms,
+                self._float("max_linear_velocity_error_rms_mps"),
+                "max",
+            ),
+            (
+                "contact_mismatch_ratio",
+                foot.get("contact_mismatch_ratio"),
+                self._float("max_contact_mismatch_ratio"),
+                "max",
+            ),
+            (
+                "stance_slip_per_base_path",
+                foot["stance_slip_distance_total_m"] / travel,
+                self._float("max_stance_slip_per_base_path"),
+                "max",
+            ),
+            (
+                "swing_peak_clearance_min_m",
+                foot.get("swing_peak_clearance_min_m"),
+                self._float("min_swing_peak_clearance_m"),
+                "min",
+            ),
+        ]
+        failures = []
+        for name, measured, limit, direction in checks:
+            if limit < 0.0:
+                return [
+                    GateFailure(
+                        "CALIBRATION_PROFILE_INCOMPLETE",
+                        f"calibrated profile has no enabled threshold for {name}",
+                        measured=limit,
+                        provenance="TEST_INFRASTRUCTURE",
+                        infrastructure=True,
+                    )
+                ]
+            if measured is None or not math.isfinite(float(measured)):
+                return [
+                    GateFailure(
+                        "QUALITY_DATA_MISSING",
+                        f"quality metric {name} is unavailable",
+                        measured=measured,
+                        provenance="TEST_INFRASTRUCTURE",
+                        infrastructure=True,
+                    )
+                ]
+            failed = (
+                float(measured) > limit
+                if direction == "max"
+                else float(measured) < limit
+            )
+            if failed:
+                failures.append(
+                    GateFailure(
+                        "QUALITY_GATE",
+                        f"calibrated quality gate failed: {name}",
+                        measured=float(measured),
+                        limit=limit,
+                        provenance="CALIBRATED_QUALITY",
+                    )
+                )
+        return failures
 
     def _poll(self) -> None:
         if self._done:
             return
-        now = self._now_sec()
+        wall_now = self._now_sec()
         self._request_robot_description()
         self._collect_robot_description()
         self._update_foot_positions_from_tf()
 
-        if now >= self._total_deadline:
+        if wall_now >= self._wall_watchdog_deadline:
             self._fail(
-                "TOTAL_TIMEOUT",
-                "LAV1 exceeded its total wall-clock timeout",
+                "WALL_WATCHDOG_TIMEOUT",
+                "LAV1 exceeded its wall-clock infrastructure watchdog",
                 infrastructure=True,
-                limit=self._float("total_timeout_sec"),
+                limit=self._float("wall_watchdog_timeout_sec"),
                 provenance="TEST_INFRASTRUCTURE",
+            )
+            return
+        if (
+            self._stage in self.SCORED_STAGES
+            and self._last_sim_advance_wall_sec is not None
+            and wall_now - self._last_sim_advance_wall_sec
+            > self._float("sim_stall_timeout_sec")
+        ):
+            self._fail(
+                "SIM_TIME_STALLED",
+                "simulation time stopped advancing",
+                infrastructure=True,
+                measured=wall_now - self._last_sim_advance_wall_sec,
+                limit=self._float("sim_stall_timeout_sec"),
+                provenance="TEST_INFRASTRUCTURE",
+            )
+            return
+        sim_now = self._protocol_now_sec()
+        if (
+            self._score_start_sec is not None
+            and sim_now is not None
+            and sim_now - self._score_start_sec >= self._float("total_timeout_sec")
+        ):
+            self._fail(
+                "PROTOCOL_TIMEOUT",
+                "LAV1 exceeded its simulation-time protocol budget",
+                measured=sim_now - self._score_start_sec,
+                limit=self._float("total_timeout_sec"),
+                provenance="TASK_PROTOCOL",
             )
             return
 
@@ -1186,7 +1517,7 @@ class LocomotionAcceptanceNode(Node):
                     "WAIT_SETTLE",
                     timeout_sec=self._float("wait_settle_timeout_sec"),
                 )
-            elif now >= self._ready_deadline:
+            elif wall_now >= self._ready_deadline:
                 self._fail(
                     "READINESS_TIMEOUT",
                     f"required ground-truth never became ready: {missing}",
@@ -1200,28 +1531,88 @@ class LocomotionAcceptanceNode(Node):
         if self._stage == "WAIT_SETTLE":
             self._publish_command(0.0, 0.0)
             missing = self._required_streams_missing()
+            contact_missing = self._contact_health_missing(require_recent=True)
             if missing:
                 self._stable_since = None
-            elif self._stable_for(self._float("settle_duration_sec")):
+            elif (
+                not contact_missing
+                and self._stable_for(self._float("settle_duration_sec"))
+            ):
                 self._start_scored_protocol()
                 return
-            if self._stage_deadline_sec is not None and now >= self._stage_deadline_sec:
-                self._fail(
-                    "SETTLE_TIMEOUT",
-                    "robot did not reach the required stable start state",
-                    measured=self._latest_pose,
-                    limit=self._float("wait_settle_timeout_sec"),
-                )
+            if (
+                self._stage_deadline_sec is not None
+                and wall_now >= self._stage_deadline_sec
+            ):
+                if contact_missing:
+                    self._fail(
+                        "CONTACT_HEALTH_TIMEOUT",
+                        "foot contact instrumentation never proved standing contact",
+                        infrastructure=True,
+                        measured=contact_missing,
+                        limit=self._float("wait_settle_timeout_sec"),
+                        provenance="TEST_INFRASTRUCTURE",
+                    )
+                elif missing:
+                    self._fail(
+                        "SETTLE_DATA_TIMEOUT",
+                        "required data became unavailable while settling",
+                        infrastructure=True,
+                        measured=missing,
+                        limit=self._float("wait_settle_timeout_sec"),
+                        provenance="TEST_INFRASTRUCTURE",
+                    )
+                else:
+                    self._fail(
+                        "SETTLE_TIMEOUT",
+                        "robot did not reach the required stable start state",
+                        measured=self._latest_pose,
+                        limit=self._float("wait_settle_timeout_sec"),
+                    )
             return
 
         if not self._check_hard_gates():
             return
         assert self._latest_pose is not None
+        assert sim_now is not None
         pose = self._latest_pose
-        elapsed = now - self._stage_start_sec
+        elapsed = sim_now - self._stage_start_sec
 
         if self._stage == "STAND":
             self._publish_command(0.0, 0.0)
+            assert self._stand_origin is not None
+            drift_failure = stand_drift_failure(
+                self._stand_origin,
+                (pose["x"], pose["y"]),
+                self._float("stand_max_drift_m"),
+            )
+            if drift_failure is not None:
+                self._fail_gate(drift_failure)
+                return
+            if not self._is_stable():
+                self._fail(
+                    "STAND_MOTION",
+                    "stationary stand exceeded velocity stability limits",
+                    measured={
+                        "vx_body_mps": pose["vx_body"],
+                        "vy_body_mps": pose["vy_body"],
+                        "vz_mps": pose["vz"],
+                        "angular_speed_radps": pose["angular_speed"],
+                    },
+                    limit={
+                        "planar_mps": self._float(
+                            "settle_max_linear_speed_mps"
+                        ),
+                        "vertical_mps": self._float(
+                            "settle_max_vertical_speed_mps"
+                        ),
+                        "angular_radps": self._float(
+                            "settle_max_angular_speed_radps"
+                        ),
+                    },
+                    provenance="TASK_PROTOCOL",
+                )
+                return
             if elapsed >= self._float("stand_duration_sec"):
                 timeout = self._motion_timeout(
                     self._route_distance_m,
@@ -1274,24 +1665,24 @@ class LocomotionAcceptanceNode(Node):
         elif self._stage == "TURN":
             self._publish_command(0.0, self._float("turn_command_z"))
             assert self._turn_origin is not None
-            translation = math.hypot(
-                pose["x"] - self._turn_origin[0],
-                pose["y"] - self._turn_origin[1],
+            turn = assess_turn(
+                self._turn_origin,
+                (pose["x"], pose["y"]),
+                self._turn_start_yaw,
+                pose["unwrapped_yaw"],
+                self._float("turn_command_z"),
+                self._float("turn_target_yaw_rad"),
             )
-            if translation > self._turn_translation_limit_m:
+            if turn.translation_m > self._turn_translation_limit_m:
                 self._fail(
                     "TURN_TRANSLATION",
                     "in-place turn translated beyond its allowed radius",
-                    measured=translation,
+                    measured=turn.translation_m,
                     limit=self._turn_translation_limit_m,
-                    provenance="PROJECT_SAFETY",
+                    provenance="TASK_PROTOCOL",
                 )
                 return
-            direction = -1.0 if self._float("turn_command_z") < 0.0 else 1.0
-            yaw_progress = direction * (
-                pose["unwrapped_yaw"] - self._turn_start_yaw
-            )
-            if yaw_progress >= self._float("turn_target_yaw_rad"):
+            if turn.signed_progress_rad >= self._float("turn_target_yaw_rad"):
                 self._begin_stage(
                     "FINAL_STOP",
                     timeout_sec=self._float("stop_duration_sec") + 8.0,
@@ -1303,14 +1694,51 @@ class LocomotionAcceptanceNode(Node):
                 elapsed >= self._float("stop_duration_sec")
                 and self._stable_for(1.0)
             ):
+                assert self._turn_origin is not None
+                final_turn = assess_turn(
+                    self._turn_origin,
+                    (pose["x"], pose["y"]),
+                    self._turn_start_yaw,
+                    pose["unwrapped_yaw"],
+                    self._float("turn_command_z"),
+                    self._float("turn_target_yaw_rad"),
+                )
+                self._turn_final_error_rad = final_turn.final_error_rad
+                if (
+                    abs(final_turn.final_error_rad)
+                    > self._float("turn_final_tolerance_rad")
+                ):
+                    self._fail(
+                        "TURN_FINAL_ERROR",
+                        "stopped turn pose missed the requested net yaw",
+                        measured=final_turn.final_error_rad,
+                        limit=self._float("turn_final_tolerance_rad"),
+                        provenance="TASK_PROTOCOL",
+                    )
+                    return
+                quality_failures = self._quality_failures()
+                if quality_failures:
+                    self._fail_gate(quality_failures[0])
+                    return
+                status, passed, _ = completion_outcome(
+                    str(self._params["calibration_status"]),
+                    quality_failures,
+                )
                 self._finish(
-                    True,
-                    "PASS_LOCOMOTION_BASELINE",
-                    "all LAV1 hard and task gates passed",
+                    passed,
+                    status,
+                    (
+                        "all calibrated locomotion gates passed"
+                        if passed
+                        else "safety and route gates passed; quality calibration is pending"
+                    ),
                 )
                 return
 
-        if self._stage_deadline_sec is not None and now >= self._stage_deadline_sec:
+        if (
+            self._stage_deadline_sec is not None
+            and sim_now >= self._stage_deadline_sec
+        ):
             self._fail(
                 "STAGE_TIMEOUT",
                 f"stage {self._stage} did not meet its completion condition",
@@ -1328,7 +1756,7 @@ class LocomotionAcceptanceNode(Node):
                     else "PASS"
                 ),
                 "maximum_n": self._max_base_contact_force_n,
-                "limit_n": self._float("illegal_contact_force_n"),
+                "detection": "any boolean contact event; force reported when available",
                 "provenance": "REFERENCE_HARD",
             },
             "illegal_tibia_contact": {
@@ -1338,8 +1766,19 @@ class LocomotionAcceptanceNode(Node):
                     else "PASS"
                 ),
                 "maximum_n": self._max_tibia_contact_force_n,
-                "limit_n": self._float("illegal_contact_force_n"),
+                "detection": "any boolean contact event; force reported when available",
                 "provenance": "PROJECT_SAFETY",
+            },
+            "contact_instrumentation": {
+                "status": (
+                    "PASS"
+                    if not self._contact_health_missing(require_recent=False)
+                    else "FAIL"
+                ),
+                "foot_contact_seen": dict(self._foot_contact_seen),
+                "wrench_messages": self._contact_wrench_messages,
+                "boolean_only_messages": self._contact_boolean_messages,
+                "provenance": "TEST_INFRASTRUCTURE",
             },
             "tilt": {
                 "maximum_rad": self._tilt_stats.maximum
@@ -1369,12 +1808,48 @@ class LocomotionAcceptanceNode(Node):
                 "return_tolerance_m": self._return_tolerance_m,
                 "provenance": "TASK_PROTOCOL",
             },
+            "stationary_stability": {
+                "max_planar_speed_mps": self._float(
+                    "settle_max_linear_speed_mps"
+                ),
+                "max_vertical_speed_mps": self._float(
+                    "settle_max_vertical_speed_mps"
+                ),
+                "max_angular_speed_radps": self._float(
+                    "settle_max_angular_speed_radps"
+                ),
+                "stand_max_drift_m": self._float("stand_max_drift_m"),
+                "provenance": "TASK_PROTOCOL",
+            },
+            "turn": {
+                "target_yaw_rad": self._float("turn_target_yaw_rad"),
+                "final_error_rad": self._turn_final_error_rad,
+                "final_tolerance_rad": self._float("turn_final_tolerance_rad"),
+                "provenance": "TASK_PROTOCOL",
+            },
+            "quality_calibration": {
+                "status": str(self._params["calibration_status"]),
+                "profile_id": str(self._params["calibration_profile_id"]),
+                "provenance": "CALIBRATED_QUALITY",
+            },
         }
 
     def _metrics_report(self) -> dict:
         foot_metrics = self._foot_metrics.as_dict()
         travel = max(self._base_path_length_m, 1e-9)
-        mass = max(self._float("robot_mass_kg"), 1e-9)
+        mass = max(
+            (
+                self._robot_metadata.total_mass_kg
+                if self._robot_metadata is not None
+                else self._float("robot_mass_kg")
+            ),
+            1e-9,
+        )
+        body_width = (
+            self._robot_metadata.body_width_m
+            if self._robot_metadata is not None
+            else self._float("body_width_m")
+        )
         commanded_cot = self._commanded_energy_j / (mass * 9.80665 * travel)
         return {
             "body_height_m": self._height_stats.as_dict(),
@@ -1384,23 +1859,26 @@ class LocomotionAcceptanceNode(Node):
             "linear_velocity_error_mps": self._linear_velocity_error_stats.as_dict(),
             "lateral_velocity_error_mps": self._lateral_velocity_error_stats.as_dict(),
             "yaw_rate_error_radps": self._yaw_rate_error_stats.as_dict(),
+            "angular_speed_radps": self._angular_speed_stats.as_dict(),
+            "straight_heading_error_abs_rad": self._heading_error_abs_stats.as_dict(),
             "lateral_error_abs_m": self._lateral_error_abs_stats.as_dict(),
             "normalized_lateral_error_mean": (
                 None
                 if self._lateral_error_abs_stats.mean is None
                 else self._lateral_error_abs_stats.mean
-                / max(self._float("body_width_m"), 1e-9)
+                / max(body_width, 1e-9)
             ),
             "normalized_lateral_error_max": (
                 None
                 if self._lateral_error_abs_stats.count == 0
                 else self._lateral_error_abs_stats.maximum
-                / max(self._float("body_width_m"), 1e-9)
+                / max(body_width, 1e-9)
             ),
             "route_projection_m": self._projection_stats.as_dict(),
             "base_path_length_m": self._base_path_length_m,
             "commanded_mechanical_energy_j": self._commanded_energy_j,
             "commanded_cot": commanded_cot,
+            "turn_final_error_rad": self._turn_final_error_rad,
             "foot": foot_metrics,
             "stance_slip_per_base_path": (
                 foot_metrics["stance_slip_distance_total_m"] / travel
@@ -1409,28 +1887,53 @@ class LocomotionAcceptanceNode(Node):
 
     def _build_report(self, status: str, message: str) -> dict:
         pose = self._latest_pose
+        provisional_pass = status == "PASS_SAFETY_ROUTE_PROVISIONAL"
+        metadata = self._robot_metadata
         return {
-            "schema_version": 1,
+            "schema_version": 2,
             "protocol_id": str(self._params["protocol_id"]),
+            "run_uuid": str(self._params["run_uuid"]),
             "trial_id": str(self._params["trial_id"]),
             "status": status,
             "passed": status == "PASS_LOCOMOTION_BASELINE",
+            "provisional_pass": provisional_pass,
+            "artifact_complete": False,
             "message": message,
             "failure": self._failure,
             "environment": {
                 "model_variant": str(self._params["model_variant"]),
                 "controller_mode": str(self._params["controller_mode"]),
                 "ros_domain_id": os.environ.get("ROS_DOMAIN_ID"),
+                "gz_partition": os.environ.get("GZ_PARTITION"),
+                "ign_partition": os.environ.get("IGN_PARTITION"),
                 "platform": platform.platform(),
                 "python": platform.python_version(),
+                "model": (
+                    None
+                    if metadata is None
+                    else {
+                        "total_mass_kg": metadata.total_mass_kg,
+                        "body_length_m": metadata.body_length_m,
+                        "body_width_m": metadata.body_width_m,
+                        "foot_radius_m": metadata.foot_radius_m,
+                    }
+                ),
             },
             "timing": {
+                "started_utc": self._start_utc,
                 "wall_duration_sec": self._now_sec() - self._start_wall_sec,
-                "score_duration_sec": (
+                "score_wall_duration_sec": (
+                    None
+                    if self._score_start_wall_sec is None
+                    else self._now_sec() - self._score_start_wall_sec
+                ),
+                "score_sim_duration_sec": (
                     None
                     if self._score_start_sec is None
-                    else self._now_sec() - self._score_start_sec
+                    or self._latest_sim_sec is None
+                    else self._latest_sim_sec - self._score_start_sec
                 ),
+                "final_sim_time_sec": self._latest_sim_sec,
             },
             "stages": self._stage_records,
             "final_pose": pose,
@@ -1443,14 +1946,37 @@ class LocomotionAcceptanceNode(Node):
                 "joint_state": str(self._params["joint_state_topic"]),
                 "contact_phase": str(self._params["contact_phase_topic"]),
                 "effort_command": str(self._params["effort_command_topic"]),
+                "base_and_tibia_contact": "boolean event latch; wrench optional",
+                "foot_contact": "boolean contact presence with freshness timeout",
+                "base_kinematics": "finite difference of stamped Gazebo pose",
                 "dynamic_pose_frames": self._dynamic_pose_frame_ids,
                 "last_tf_error": self._last_tf_error or None,
             },
+            "calibration": {
+                "status": str(self._params["calibration_status"]),
+                "profile_id": str(self._params["calibration_profile_id"]),
+                "formal_locomotion_pass_enabled": (
+                    str(self._params["calibration_status"]).strip().lower()
+                    == "calibrated"
+                    and str(self._params["calibration_profile_id"])
+                    .strip()
+                    .lower()
+                    not in {"", "none", "uncalibrated"}
+                ),
+            },
+            "integrity": {
+                "config_sha256": self._config_hash,
+                "robot_description_sha256": self._robot_description_hash,
+            },
+            "artifacts": {},
             "threshold_provenance": {
                 "REFERENCE_HARD": "Isaac Lab / legged_gym termination pattern",
                 "PHYSICAL_HARD": "expanded Dog2 URDF joint limits",
                 "MISSION_REQUIREMENT": "Dog2 rail lock requirement",
                 "PROJECT_SAFETY": "Dog2-specific configurable safety gate",
+                "TASK_PROTOCOL": "fixed LAV route and completion requirement",
+                "TEST_INFRASTRUCTURE": "data-chain and harness validity requirement",
+                "CALIBRATED_QUALITY": "threshold fitted from labeled acceptance trials",
                 "REPORT_ONLY": "reported PI; no universal PASS threshold claimed",
             },
             "specification": "docs/DOG2_LOCOMOTION_ACCEPTANCE_SPEC.md",
@@ -1480,14 +2006,16 @@ class LocomotionAcceptanceNode(Node):
 
     def _write_junit(self, report: dict) -> None:
         passed = bool(report["passed"])
+        provisional = bool(report.get("provisional_pass", False))
         infrastructure = report["status"] == "FAIL_INFRASTRUCTURE"
         suite = ET.Element(
             "testsuite",
             {
                 "name": "dog2_locomotion_acceptance",
                 "tests": "1",
-                "failures": "0" if passed or infrastructure else "1",
+                "failures": "0" if passed or provisional or infrastructure else "1",
                 "errors": "1" if infrastructure else "0",
+                "skipped": "1" if provisional else "0",
                 "time": f"{report['timing']['wall_duration_sec']:.6f}",
             },
         )
@@ -1500,7 +2028,13 @@ class LocomotionAcceptanceNode(Node):
                 "time": f"{report['timing']['wall_duration_sec']:.6f}",
             },
         )
-        if not passed:
+        if provisional:
+            ET.SubElement(
+                case,
+                "skipped",
+                {"message": "quality thresholds are not calibrated"},
+            )
+        elif not passed:
             tag = "error" if infrastructure else "failure"
             failure = ET.SubElement(
                 case,
@@ -1535,15 +2069,42 @@ class LocomotionAcceptanceNode(Node):
         self._close_stage()
         self._foot_metrics.finish()
         report = self._build_report(status, message)
-        exit_code = 0 if success else (2 if status == "FAIL_INFRASTRUCTURE" else 1)
+        exit_code = (
+            0
+            if success
+            else (
+                2
+                if status == "FAIL_INFRASTRUCTURE"
+                else (3 if status == "PASS_SAFETY_ROUTE_PROVISIONAL" else 1)
+            )
+        )
         try:
-            atomic_write_json(str(self._params["result_json"]), report)
             self._write_samples()
             self._write_junit(report)
+            samples_path = Path(str(self._params["samples_csv"]))
+            junit_path = Path(str(self._params["junit_xml"]))
+            report["artifacts"] = {
+                "samples_csv": {
+                    "path": str(samples_path),
+                    "sha256": sha256_file(samples_path),
+                },
+                "junit_xml": {
+                    "path": str(junit_path),
+                    "sha256": sha256_file(junit_path),
+                },
+            }
+            # The JSON is the commit marker and is always written last.
+            report["artifact_complete"] = True
+            atomic_write_json(str(self._params["result_json"]), report)
         except Exception as exc:
             exit_code = 2
             self.get_logger().error(f"Failed to write LAV1 report: {exc}")
-        log = self.get_logger().info if success else self.get_logger().error
+        if success:
+            log = self.get_logger().info
+        elif status == "PASS_SAFETY_ROUTE_PROVISIONAL":
+            log = self.get_logger().warn
+        else:
+            log = self.get_logger().error
         log(f"{status}: {message}; report={self._params['result_json']}")
         timer = threading.Timer(0.25, lambda: os._exit(exit_code))
         timer.daemon = True

@@ -243,6 +243,34 @@ int main()
     return 1;
   }
 
+  {
+    dog2_wbc::WBCController::Parameters limit_params;
+    limit_params.gravity_compensation = false;
+    limit_params.joint_limit_margin = 0.12;
+    limit_params.joint_limit_kp = 35.0;
+    limit_params.joint_limit_kd = 1.5;
+    dog2_wbc::WBCController limit_wbc(limit_params);
+    limit_wbc.initializeFromRobotDescription(urdf_xml);
+
+    std::array<dog2_wbc::WBCController::LegState, 4> limit_legs;
+    for (auto & leg : limit_legs) {
+      leg.joint_angles.setZero();
+      leg.joint_velocities.setZero();
+      leg.sliding_position = 0.0;
+      leg.in_contact = false;
+      leg.swing = false;
+    }
+    limit_legs[2].joint_angles(1) = 2.75;
+    limit_legs[2].joint_velocities(1) = 0.2;
+    const Eigen::VectorXd limit_torques =
+      limit_wbc.computeTorques(Eigen::VectorXd::Zero(12), limit_legs);
+    if (limit_torques(2 * 3 + 1) >= 0.0) {
+      std::cerr << "Upper soft limit must produce a negative restoring torque, got "
+                << limit_torques(2 * 3 + 1) << std::endl;
+      return 1;
+    }
+  }
+
   // Method A: standalone stance check. With gravity compensation on, the WBC
   // torques must equal J^T*f + g(q) sliced at the four joint v-indices. The
   // old fixed expectations (-7.54 / -9.88) baked in J^T*f only.

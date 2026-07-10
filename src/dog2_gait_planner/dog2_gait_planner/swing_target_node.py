@@ -7,10 +7,12 @@ from dataclasses import dataclass
 from typing import List, Optional
 
 import numpy as np
+import pinocchio as pin
 import rclpy
 from dog2_interfaces.msg import ContactPhase, GaitCommand
 from nav_msgs.msg import Odometry
 from rclpy.node import Node
+from sensor_msgs.msg import JointState
 from std_msgs.msg import Float64MultiArray
 
 LEG_NAMES = ["lf", "lh", "rh", "rf"]
@@ -60,24 +62,72 @@ def swing_bezier(
     swing_time: float,
     height: float,
 ) -> tuple[np.ndarray, np.ndarray]:
+    """Lift vertically, transfer while clear, then lower vertically."""
     safe_time = max(1e-3, swing_time)
-    pos = cubic_bezier(p0, pf, phase)
-    vel = cubic_bezier_derivative(p0, pf, phase) / safe_time
+    s = clamp01(phase)
+    lift_end = 0.30
+    lower_start = 0.70
+    apex_z = max(float(p0[2]), float(pf[2])) + height
+    pos = p0.copy()
+    vel = np.zeros(3, dtype=float)
 
-    if phase < 0.5:
+    if s < lift_end:
+        local = s / lift_end
         z0 = np.array([p0[2]], dtype=float)
-        zf = np.array([p0[2] + height], dtype=float)
-        z_phase = phase * 2.0
-        pos[2] = cubic_bezier(z0, zf, z_phase)[0]
-        vel[2] = cubic_bezier_derivative(z0, zf, z_phase)[0] * 2.0 / safe_time
+        zf = np.array([apex_z], dtype=float)
+        pos[2] = cubic_bezier(z0, zf, local)[0]
+        vel[2] = (
+            cubic_bezier_derivative(z0, zf, local)[0]
+            / (safe_time * lift_end)
+        )
+    elif s < lower_start:
+        span = lower_start - lift_end
+        local = (s - lift_end) / span
+        pos[:2] = cubic_bezier(p0[:2], pf[:2], local)
+        pos[2] = apex_z
+        vel[:2] = (
+            cubic_bezier_derivative(p0[:2], pf[:2], local)
+            / (safe_time * span)
+        )
     else:
-        z0 = np.array([p0[2] + height], dtype=float)
+        local = (s - lower_start) / (1.0 - lower_start)
+        pos[:2] = pf[:2]
+        z0 = np.array([apex_z], dtype=float)
         zf = np.array([pf[2]], dtype=float)
-        z_phase = phase * 2.0 - 1.0
-        pos[2] = cubic_bezier(z0, zf, z_phase)[0]
-        vel[2] = cubic_bezier_derivative(z0, zf, z_phase)[0] * 2.0 / safe_time
+        pos[2] = cubic_bezier(z0, zf, local)[0]
+        vel[2] = (
+            cubic_bezier_derivative(z0, zf, local)[0]
+            / (safe_time * (1.0 - lower_start))
+        )
 
     return pos, vel
+
+
+def foothold_velocity_offset(
+    body_velocity: np.ndarray,
+    command_velocity: np.ndarray,
+    *,
+    gait: str,
+    raibert_k: float,
+    crawl_lead_sec: float,
+    maximum: float,
+) -> np.ndarray:
+    """Return bounded feedback plus crawl stance-time velocity lead."""
+    offset = raibert_k * (body_velocity - command_velocity)
+    if gait == "crawl":
+        # A crawl foot remains planted while the other three legs take their
+        # turns. Put it ahead of the static nominal at touchdown so that the
+        # support polygon still covers the COM near the end of that interval.
+        offset += crawl_lead_sec * command_velocity
+    norm = float(np.linalg.norm(offset))
+    if norm > maximum > 0.0:
+        offset *= maximum / norm
+    return offset
+
+
+def touchdown_height(liftoff_height: float, overshoot: float) -> float:
+    """Search just below the measured ground height at liftoff."""
+    return float(liftoff_height) - max(0.0, float(overshoot))
 
 
 @dataclass
@@ -100,25 +150,26 @@ class SwingTargetNode(Node):
         self.declare_parameter("swing_fraction", 0.5)
         self.declare_parameter("swing_height", 0.08)
         self.declare_parameter("raibert_k", 0.03)
+        self.declare_parameter("crawl_velocity_lead_sec", 1.2)
         # Cap on the Raibert foothold shift from nominal: body-velocity
         # transients (tip/careen recoveries reach ~1 m/s) otherwise send
         # footholds 20+ cm out, beyond the leg workspace.
         self.declare_parameter("foothold_offset_max", 0.06)
-        # Ground-search overshoot: the swing target ends this far BELOW the
-        # nominal foothold z. The stance/swing schedule is clock-driven, so
-        # if the trunk rides a few cm high at "touchdown" the foot would
-        # otherwise still be airborne when stance force gets applied to it
-        # (leg free-falls, trunk drops onto it -- the per-stride pitch-rate
-        # spikes that seeded every tip). Ending below ground turns the tail
-        # of the swing into a bounded downward press (kp_z * overshoot)
-        # that guarantees contact before the stance phase starts.
+        # Ground-search overshoot below the measured liftoff ground height.
+        # A fixed nominal z drove short legs several centimetres beyond their
+        # reachable workspace when the trunk rode below its nominal height.
         self.declare_parameter("touchdown_overshoot", 0.02)
         self.declare_parameter("default_cmd_x", 0.0)
         self.declare_parameter("default_cmd_y", 0.0)
+        self.declare_parameter("robot_description", "")
+        self.declare_parameter("joint_state_topic", "/joint_states")
 
         self._swing_fraction = clamp01(float(self.get_parameter("swing_fraction").value))
         self._swing_height = float(self.get_parameter("swing_height").value)
         self._raibert_k = float(self.get_parameter("raibert_k").value)
+        self._crawl_velocity_lead_sec = max(
+            0.0, float(self.get_parameter("crawl_velocity_lead_sec").value)
+        )
         self._foothold_offset_max = max(
             0.0, float(self.get_parameter("foothold_offset_max").value)
         )
@@ -136,6 +187,7 @@ class SwingTargetNode(Node):
             dtype=float,
         )
         self._cmd_yaw_rate = 0.0
+        self._gait = "trot"
         self._target_pos = NOMINAL_FOOTS.copy()
         self._target_vel = np.zeros((4, 3), dtype=float)
         self._states = [
@@ -143,6 +195,16 @@ class SwingTargetNode(Node):
             for i in range(4)
         ]
         self._mask = np.zeros(4, dtype=float)
+        self._actual_foot_pos = NOMINAL_FOOTS.copy()
+        self._actual_foot_valid = np.zeros(4, dtype=bool)
+        self._pin_model = None
+        self._pin_data = None
+        self._pin_q = None
+        self._joint_q_index: dict[str, int] = {}
+        self._foot_frame_id: list[int] = []
+        self._initialize_kinematics(
+            str(self.get_parameter("robot_description").value)
+        )
 
         self.create_subscription(
             ContactPhase,
@@ -162,6 +224,13 @@ class SwingTargetNode(Node):
             self._on_gait_command,
             20,
         )
+        if self._pin_model is not None:
+            self.create_subscription(
+                JointState,
+                str(self.get_parameter("joint_state_topic").value),
+                self._on_joint_state,
+                20,
+            )
         self._pub = self.create_publisher(
             Float64MultiArray,
             str(self.get_parameter("swing_target_topic").value),
@@ -172,6 +241,57 @@ class SwingTargetNode(Node):
 
     def _now_sec(self) -> float:
         return self.get_clock().now().nanoseconds / 1e9
+
+    def _initialize_kinematics(self, robot_description: str) -> None:
+        if not robot_description:
+            self.get_logger().warning(
+                "robot_description is empty; swing starts use nominal feet"
+            )
+            return
+        self._pin_model = pin.buildModelFromXML(robot_description)
+        self._pin_data = self._pin_model.createData()
+        self._pin_q = np.zeros(self._pin_model.nq)
+        for leg in LEG_NAMES:
+            for suffix in (
+                "rail_joint",
+                "coxa_joint",
+                "femur_joint",
+                "tibia_joint",
+            ):
+                name = f"{leg}_{suffix}"
+                joint_id = self._pin_model.getJointId(name)
+                if joint_id == 0:
+                    raise RuntimeError(f"swing model is missing {name}")
+                self._joint_q_index[name] = int(
+                    self._pin_model.idx_qs[joint_id]
+                )
+            frame_id = self._pin_model.getFrameId(f"{leg}_foot_link")
+            if frame_id >= self._pin_model.nframes:
+                raise RuntimeError(f"swing model is missing {leg}_foot_link")
+            self._foot_frame_id.append(int(frame_id))
+
+    def _on_joint_state(self, msg: JointState) -> None:
+        assert self._pin_model is not None
+        assert self._pin_data is not None
+        assert self._pin_q is not None
+        updated = False
+        for name, position in zip(msg.name, msg.position):
+            q_index = self._joint_q_index.get(name)
+            if q_index is None or not np.isfinite(position):
+                continue
+            self._pin_q[q_index] = float(position)
+            updated = True
+        if not updated:
+            return
+        pin.forwardKinematics(self._pin_model, self._pin_data, self._pin_q)
+        pin.updateFramePlacements(self._pin_model, self._pin_data)
+        for leg, frame_id in enumerate(self._foot_frame_id):
+            position = np.asarray(
+                self._pin_data.oMf[frame_id].translation, dtype=float
+            ).reshape(3)
+            if np.all(np.isfinite(position)):
+                self._actual_foot_pos[leg] = position
+                self._actual_foot_valid[leg] = True
 
     def _on_odom(self, msg: Odometry) -> None:
         # Odom twist is WORLD frame (gz_pose_to_odom publishes v_world) while
@@ -195,23 +315,24 @@ class SwingTargetNode(Node):
         self._body_velocity += 0.15 * (v_body - self._body_velocity)
 
     def _on_gait_command(self, msg: GaitCommand) -> None:
+        self._gait = msg.gait or self._gait
         self._cmd_velocity[:] = [msg.linear_x, msg.linear_y]
         self._cmd_yaw_rate = float(msg.angular_z)
 
     def _foothold(self, leg: int) -> np.ndarray:
         foot = NOMINAL_FOOTS[leg].copy()
-        # NO symmetric velocity lead. The footholds are COM-centred so that
-        # both trot diagonals pass through the COM (the axis a 2-point
-        # support cannot actuate); a velocity lead of 0.5*T_st*v shifts
-        # every touchdown 2-3 cm forward and re-creates exactly the tip
-        # moment that careened run40/run60. At quasi-static speeds the
-        # stance feet drifting a few cm back in the workspace during a
-        # cycle is harmless; the Raibert term below still corrects
-        # measured-vs-commanded velocity error.
-        offset = self._raibert_k * (self._body_velocity - self._cmd_velocity)
-        norm = float(np.linalg.norm(offset))
-        if norm > self._foothold_offset_max > 0.0:
-            offset *= self._foothold_offset_max / norm
+        # Trot keeps the COM-centred nominal so both diagonal support lines
+        # pass through the COM. Crawl instead needs a velocity lead because
+        # each foot remains planted through the other three single-leg slots.
+        # The common workspace cap bounds both that lead and Raibert feedback.
+        offset = foothold_velocity_offset(
+            self._body_velocity,
+            self._cmd_velocity,
+            gait=self._gait,
+            raibert_k=self._raibert_k,
+            crawl_lead_sec=self._crawl_velocity_lead_sec,
+            maximum=self._foothold_offset_max,
+        )
         foot[:2] += offset
         # Yaw lead: rotate the foothold by half the yaw the body will cover
         # during the stance. Without it a commanded turn lands the feet at
@@ -224,7 +345,6 @@ class SwingTargetNode(Node):
             x, y = foot[0], foot[1]
             foot[0] = c * x - s * y
             foot[1] = s * x + c * y
-        foot[2] -= self._touchdown_overshoot
         return foot
 
     def _on_contact_phase(self, msg: ContactPhase) -> None:
@@ -239,8 +359,16 @@ class SwingTargetNode(Node):
             state = self._states[leg]
             if swing and not state.in_swing:
                 state.start_time = now
-                state.p0 = self._target_pos[leg].copy()
+                state.p0 = (
+                    self._actual_foot_pos[leg].copy()
+                    if self._actual_foot_valid[leg]
+                    else self._target_pos[leg].copy()
+                )
                 state.pf = self._foothold(leg)
+                state.pf[2] = touchdown_height(
+                    state.p0[2], self._touchdown_overshoot
+                )
+                self._target_pos[leg] = state.p0.copy()
             if not swing:
                 self._target_pos[leg] = NOMINAL_FOOTS[leg]
                 self._target_vel[leg].fill(0.0)

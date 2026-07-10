@@ -1,6 +1,6 @@
 # Dog2 无头行走验收规范
 
-版本：LAV1（2026-07-10）
+版本：LAV1-R2 / result schema v2（2026-07-10）
 
 ## 1. 目的与边界
 
@@ -33,10 +33,12 @@ LAV1 只实现第 2 层。旧 smoke 的 PASS 不能替代 LAV1。
 
 Dog2 的采用方式：
 
-- 每次试验使用独立 domain id；
+- 每次试验使用独立 ROS domain id 和 Gazebo transport partition；
 - checker 以进程退出码和结构化结果共同给出结果；
 - 每次运行输出 JSON、CSV 和 JUnit XML，便于本地与 CI 使用；
-- 所有等待都有明确超时。
+- 所有等待都有明确超时；
+- 每轮绑定 `run_uuid`，CSV/JUnit 完成后最后原子提交 JSON；batch 校验
+  UUID、trial ID、mtime、schema 和 artifact SHA-256，拒绝旧报告。
 
 ### 2.2 NVIDIA Isaac Lab
 
@@ -87,7 +89,8 @@ Dog2 的采用方式：
 
 - 使用 Gazebo 专用 base、tibia、foot contact sensor，不用
   `/dog2/state_estimation/contact_state` 的 `all_true` 假接触；
-- 非法接触阈值初始采用其常见的 1 N 量级，但保留配置，并在报告中标注来源；
+- 非法接触以“存在 contact event”直接锁存为硬失败；Gazebo Fortress 未给 wrench
+  时不得伪造 1 N，force 只作为可选证据；
 - 足端滑移和摆动净空来自世界系足端轨迹与真实接触，不用机身高度冒充。
 
 限制同 Isaac Lab：训练 reward/soft limit 不是通用验收阈值。
@@ -110,14 +113,15 @@ Dog2 的采用方式：
 - 这是“固定协议 + 每次运行 PI + 跨运行聚合”的正式 benchmark 思路；
 - 论文中的 ANYmal-C 从稳定站立开始，沿固定直线到终点、停止、再返回起点；
 - 指标覆盖平均速度、路径偏差、足端滑移、机械 Cost of Transport 和成功率；
-- 协议要求同一条件至少三次完整试验，并报告跨运行统计，而不是挑最好的一次。
+- 协议要求同一条件重复完整试验并报告跨运行统计，而不是挑最好的一次。
 
 Dog2 的采用方式：
 
 - 基础路线为按机身长度归一化的直线往返，长度、速度和 corridor 写入配置；
 - task success 必须到达终点、停稳并返回起点；
 - 路径偏差按机身宽度归一化，避免只看 `hypot(dx,dy)`；
-- 单次报告原始 PI，批量入口默认执行三次并聚合 mean/std/min/max/success rate。
+- 单次报告原始 PI，批量入口默认执行十次并聚合
+  mean/std/min/p95/max/final success/provisional rate。
 
 说明：
 
@@ -149,10 +153,10 @@ LAV1 不把 Barkour 时间分数或 NIST 响应机器人场地直接套在平地
 | 来源 | 借鉴内容 | Dog2 实现 | 阈值分类 | 明确不借 |
 |------|----------|-----------|----------|----------|
 | ROS 2 `launch_testing` | 独立 domain、超时、JUnit、进程退出码 | `locomotion_acceptance_test.launch.py`、`locomotion_acceptance_batch.py` | `TEST_INFRASTRUCTURE` | 不借 turtlesim 示例里的业务判据 |
-| Isaac Lab velocity task | 每步 illegal base contact；timeout 与 terminated 分离 | Gazebo base contact sensor + `illegal_contact_force_n=1.0` | `REFERENCE_HARD` | 不借 reward weight（如 `track_lin_vel_xy_exp=1.0`） |
+| Isaac Lab velocity task | 每步 illegal base contact；timeout 与 terminated 分离 | Gazebo base contact event 锁存 | `REFERENCE_HARD` | 不借 reward weight（如 `track_lin_vel_xy_exp=1.0`） |
 | Isaac Lab rewards/terminations | 线/角速度跟踪、projected gravity、垂向速度、joint limits | odom RMSE、`up_z`/tilt、URDF hard limit | 硬门 + `REPORT_ONLY` | 不借 `feet_air_time` 训练阈值作 PASS |
 | `legged_gym` | contact-force tensor 非法接触；足端 contact 优先于 mesh | foot/tibia/base 专用 contact；stance slip 积分 | `REFERENCE_HARD` + `REPORT_ONLY` | 不借 soft limit 百分比作硬门 |
-| Eurobench PI 框架 | 固定 protocol、每 run PI、跨 run 聚合 | 直线往返 + batch 默认 3 次 + aggregate JSON/CSV | `TASK_PROTOCOL` + 统计 | 不直接复制 ANYmal 3 m 绝对距离 |
+| Eurobench PI 框架 | 固定 protocol、每 run PI、跨 run 聚合 | 直线往返 + batch 默认 10 次 + aggregate JSON/CSV | `TASK_PROTOCOL` + 统计 | 不直接复制 ANYmal 3 m 绝对距离 |
 | ANYmal 不规则地形基准 | 平均速度、Deviation Index、Slippage、CoT、Success rate | 归一化 lateral error、stance slip/path、commanded CoT | `REPORT_ONLY`（初版） | 不借 0.3/0.8 m/s 作为 Dog2 初版命令 |
 | ETH ANYmal 论文 | 速度跟踪 RMSE、成功率、重复 trial | batch mean/std、首个失败码分布 | 报告 | 不借 1.0 m/s flying trot 作为 LAV1 目标 |
 | Scientific Reports DRL 基准 | Fall rate、50 episodes、slippage ratio | 单次 trial 硬失败即 fall；batch success_rate | 硬门 + 聚合 | 不借 episode return 作 Dog2 PASS |
@@ -167,35 +171,60 @@ LAV1 不把 Barkour 时间分数或 NIST 响应机器人场地直接套在平地
 - `MISSION_REQUIREMENT`：Dog2 任务明确要求，例如 rail 锁定 5 mm；
 - `PROJECT_SAFETY`：为阻止已观察到的危险行为而设，必须注明不是行业通用值；
 - `BASELINE_DERIVED`：由已通过的标准拓扑或历史数据统计后确定；
+- `TASK_PROTOCOL`：固定路线、站立、停止和净转角的任务要求；
+- `TEST_INFRASTRUCTURE`：数据链、时钟、报告身份和运行隔离要求；
+- `CALIBRATED_QUALITY`：由带正/负标签的数据集拟合并审查后的质量门；
 - `REPORT_ONLY`：文献建议观测，但当前没有公认 PASS 阈值。
 
 禁止把 `PROJECT_SAFETY`、`BASELINE_DERIVED` 或 reward 权重写成“行业标准”。
+
+质量阈值的校准输入为 `report_json,label` 两列 CSV，`label` 只允许
+`accept/reject`。工具只接受完整 schema v2 报告，并记录每份输入的 SHA-256：
+
+```bash
+ros2 run dog2_bringup locomotion_acceptance_calibrate \
+  labels.csv \
+  --minimum-per-class 10 \
+  --output calibration_candidate.json
+```
+
+每项指标的 accept/reject 样本必须可分离；重叠或样本不足时工具输出
+`insufficient_data`。即使全部可分离也只输出 `profile_status=candidate`，不会自动把
+配置改成 calibrated。必须经过人工审查和独立 holdout 复核后，才能填写候选阈值、
+工具生成的 `candidate_profile_id` 和 `calibration_status=calibrated`；缺少有效
+profile ID 的 calibrated 配置属于基础设施失败。
 
 ## 5. LAV1 固定协议
 
 一次 trial 的状态机：
 
-1. `WAIT_READY`：等待 ground-truth、contact、joint、controller command 和 URDF 限位；
-2. `WAIT_SETTLE`：零速度等待稳定站立；此阶段不计入 benchmark；
-3. `STAND`：零命令保持；
+1. `WAIT_READY`：等待 ground-truth、contact publisher、joint、controller command、
+   simulation clock 和 URDF 限位；
+2. `WAIT_SETTLE`：零速度等待稳定站立，并要求四个足端都实际观察到接触；
+   此阶段不计入 benchmark；
+3. `STAND`：零命令保持，连续检查漂移、平面速度、垂向速度和三轴角速度；
 4. `OUTBOUND`：沿初始机身轴和命令符号行至固定终点；
 5. `OUTBOUND_STOP`：终点停稳；
 6. `RETURN`：反向返回起点；
 7. `RETURN_STOP`：起点停稳；
 8. `TURN`：原地执行固定 yaw 目标；
-9. `FINAL_STOP`：停止并结束。
+9. `FINAL_STOP`：停止后按最终净 yaw 检查目标误差，禁止只凭历史峰值通过。
 
 Dog2 物理机头当前为 `base_link -X`，因此默认直行命令为负 `linear.x`。
 验收器不假设“世界 X 就是前进”，而是冻结 trial 起始 yaw，并按命令符号构造
 路线单位向量。
 
-默认批量协议为同配置三次 trial；论文数据应增加运行数并报告置信区间。
+状态迁移只允许上述固定顺序。协议持续时间、阶段计时、速度差分和指标积分统一使用
+仿真时间；wall time 只用于数据 freshness、仿真停滞和总看门狗。
+
+默认批量协议为同配置十次 trial；正式稳定性结论建议至少 30 次并报告置信区间。
 
 ## 6. 数据源
 
 验收只使用以下数据：
 
-- base pose/twist：Gazebo ground-truth `/odom`；
+- base pose：Gazebo ground-truth `/odom`；验收速度由连续 stamped pose 差分得到，
+  不信任上游 `twist` 的坐标系约定；
 - foot 世界位姿：优先使用 Gazebo `/dog2/dynamic_pose_tf` 或完整 world TF；
   如果 headless SDF 的 fixed-joint reduction 未发布 `foot_link`，则由 Gazebo
   ground-truth `/odom`、Gazebo `/joint_states` 和运行时展开 URDF 通过
@@ -205,7 +234,13 @@ Dog2 物理机头当前为 `base_link -X`，因此默认直行命令为负 `line
 - joint position/velocity：`/joint_states`；
 - 最终旋转关节力矩命令：`/effort_controller/commands`；
 - planned contact：`/dog2/gait/contact_phase`；
-- joint hard limits：运行时 `robot_description`。
+- joint hard limits、总质量、base collision 尺寸和 foot collision radius：
+  运行时同一份展开 `robot_description`。因此 symmetric 变体实际使用 0.020 m
+  足半径，而不是配置中的旧 0.012 m。
+
+contact sensor 必须显式选择生成 SDF 中同一 link 上真实存在的 collision，并使用
+`/dog2/gz_contact/*` 自有 Gazebo topic。`WAIT_SETTLE` 的四足正接触观测是运行时
+数据链自检；仅存在 ROS publisher 不算健康。
 
 以下数据禁止作为 ground-truth：
 
@@ -218,14 +253,17 @@ Dog2 物理机头当前为 `base_link -X`，因此默认直行命令为负 `line
 
 ### 7.1 连续硬门
 
-- base contact force 超阈值：`REFERENCE_HARD`，Isaac Lab/legged_gym；
-- tibia contact force超阈值：`PROJECT_SAFETY`，用于拒绝拖胫/腿杆撑地；
+- 任意 base contact event：`REFERENCE_HARD`，回调立即锁存，不能因短脉冲过期漏检；
+- 任意 tibia contact event：`PROJECT_SAFETY`，用于拒绝拖胫/腿杆撑地；
 - tilt、`up_z` 或机身高度越界：`PROJECT_SAFETY`，用于拒绝 GUI 已观察到的
   翻滚假 PASS；
 - joint position/velocity 超出 URDF hard limit：`PHYSICAL_HARD`；
 - 最终 effort command 超出 URDF effort limit：`PHYSICAL_HARD`；
 - rail 锁零误差超过 5 mm：`MISSION_REQUIREMENT`；
-- 必需 ground-truth 过期或 trial 超时：测试基础设施失败。
+- 预期 joint position/velocity 或 12 路最终 effort command 缺失：测试基础设施失败；
+- 必需 ground-truth/contact 过期、simulation clock 停滞、wall watchdog、报告身份或
+  artifact 校验失败：测试基础设施失败；
+- simulation-time 协议或阶段未完成：任务失败，不与基础设施超时混为一类。
 
 任一硬门失败立即结束，并记录首个失败时间、阶段、测量值、限值和来源类别。
 
@@ -234,8 +272,9 @@ Dog2 物理机头当前为 `base_link -X`，因此默认直行命令为负 `line
 - outbound 到达沿路线投影终点；
 - 全程横向偏差不越过配置 corridor；
 - return 回到起点容差内；
-- turn 的净 yaw（unwrapped）达到目标且平移不越界；
-- 各 stop 阶段达到速度稳定条件。
+- stand 漂移不越界且全程满足平面/垂向/三轴角速度稳定门；
+- turn 的停止后净 yaw（unwrapped）误差和平移均不越界；
+- 各 stop 阶段同时满足平面速度、垂向速度和三轴角速度稳定条件。
 
 任务门采用 Eurobench 的固定路线/到达终点思想；Dog2 的尺度、速度和 corridor
 属于显式 `PROJECT_SAFETY` 配置，不宣称为通用标准。
@@ -250,7 +289,8 @@ Dog2 物理机头当前为 `base_link -X`，因此默认直行命令为负 `line
   \[
   e_v = \sqrt{\frac{1}{N}\sum_t \left[(v_x - v_x^{cmd})^2 + v_y^2\right]}
   \]
-  LAV1 在 outbound/return/turn 阶段对 `vx_body - cmd_vx` 与 `vy_body` 在线统计。
+  LAV1 用 Gazebo pose 差分得到机体系速度，对 `vx_body - cmd_vx` 与 `vy_body`
+  在线统计。
 - 角速度 RMSE：
   \[
   e_\omega = \sqrt{\frac{1}{N}\sum_t (\omega_z - \omega_z^{cmd})^2}
@@ -314,8 +354,10 @@ LAV1 每次 trial 至少输出：
 - `normalized_lateral_error_mean/max`：横向误差除以机身宽度；
 - `base_path_length_m`、终点/返程投影；
 - 每足 `stance_slip_distance_m` 与总滑移；
+- 每次 stance episode 的滑移、最大滑移与支撑足速度 P95；
 - 每个计划 swing 的 peak clearance；
-- planned/actual contact mismatch ratio 与最长连续错配；
+- planned/actual contact mismatch ratio、最长连续错配和计划摆动误触时间；
+- 直行 heading error、三轴 angular speed 和停止后 turn final error；
 - joint hard-limit 最小裕度、速度/effort 峰值；
 - rail 最大锁定误差；
 - `commanded_mechanical_energy_j` 与
@@ -324,28 +366,32 @@ LAV1 每次 trial 至少输出：
 `commanded_cot` 不是实测电能或真实关节力矩 CoT，报告必须保留
 `commanded_` 前缀。
 
-滑移、净空、contact mismatch、能耗和速度 RMSE 在 LAV1 默认是
-`REPORT_ONLY`；收集标准腿拓扑基线后，再用 `BASELINE_DERIVED` 阈值升级为 gate。
+滑移、净空、contact mismatch、heading、能耗和速度 RMSE 默认是
+`REPORT_ONLY`。在 `calibration_status=provisional` 时，即使安全门和任务门全部通过，
+也只能输出 `PASS_SAFETY_ROUTE_PROVISIONAL` 且 `passed=false`。只有带标签数据集完成
+校准、所有质量阈值非负且数据完整后，才允许升级为 `CALIBRATED_QUALITY` 硬门。
 
 ## 9. 旧 smoke 与 LAV1 的差异
 
 | 项目 | 旧 `smoke_check.py` | LAV1 `locomotion_acceptance` |
 |------|---------------------|------------------------------|
-| 数据源 | 状态估计 odom | Gazebo ground-truth `/odom` + contact |
+| 数据源 | 状态估计 odom | Gazebo stamped pose 差分 + contact |
 | forward PASS | `hypot(dx,dy) ≥ 0.2 m` | 沿初始机头投影到达固定终点 |
-| turn PASS | 历史峰值 yaw delta | unwrapped 净 yaw + 平移上限 |
+| turn PASS | 历史峰值 yaw delta | 停止后 unwrapped 净 yaw 误差 + 平移上限 |
 | 姿态 | 不检查 | 连续 tilt / up_z / 身高 |
 | 非法接触 | 不检查 | base/tibia contact 连续硬门 |
 | 足端行为 | `gait_quality` 占位 0 | slip / swing clearance / mismatch |
 | 导轨 | 仅 max drift | 连续硬门 5 mm |
-| 重复性 | 单次 | batch 默认 3 次 + success_rate |
-| 结果 | 一行 PASS/FAIL | JSON + CSV + JUnit + aggregate |
+| 重复性 | 单次 | batch 默认 10 次 + final/provisional rate |
+| 结果 | 一行 PASS/FAIL | schema v2 JSON + CSV + JUnit + SHA-256 aggregate |
 
 ## 10. 结果语义
 
 单次结果只能是：
 
-- `PASS_LOCOMOTION_BASELINE`：所有硬门和任务门通过；
+- `PASS_LOCOMOTION_BASELINE`：安全门、任务门和已审查 calibrated quality gate 全通过；
+- `PASS_SAFETY_ROUTE_PROVISIONAL`：安全门和任务门通过，但质量门尚未校准；
+  此状态 `passed=false`，JUnit 为 skipped，不得宣传成正式行走 PASS；
 - `FAIL_LOCOMOTION`：机器人或任务失败；
 - `FAIL_INFRASTRUCTURE`：必需数据、服务或仿真基础设施失败。
 
@@ -357,8 +403,8 @@ PASS 不代表越障、粗糙地形、抗扰或真实硬件通过。
 - `<trial>_samples.csv`：时序样本；
 - `<trial>.junit.xml`：CI 结果。
 
-批量运行输出 aggregate JSON/CSV，至少包含运行数、成功率、失败原因分布和
-各 PI 的 mean/std/min/max。
+批量运行每次创建新的 UUID 子目录；输出 aggregate JSON/CSV，至少包含正式成功率、
+provisional rate、失败原因分布和各 PI 的 mean/std/min/p95/max。
 
 ## 11. 代码入口与运行方式
 
@@ -366,6 +412,7 @@ PASS 不代表越障、粗糙地形、抗扰或真实硬件通过。
 
 - 规范：本文件
 - 验收节点：`src/dog2_bringup/dog2_bringup/locomotion_acceptance.py`
+- 纯判定内核：`src/dog2_bringup/dog2_bringup/acceptance_oracle.py`
 - 指标纯函数：`src/dog2_bringup/dog2_bringup/acceptance_metrics.py`
 - 批量聚合：`src/dog2_bringup/dog2_bringup/locomotion_acceptance_batch.py`
 - 配置：`src/dog2_bringup/config/locomotion_acceptance.yaml`
@@ -384,21 +431,23 @@ source install/setup.bash
 
 ros2 launch dog2_bringup locomotion_acceptance_test.launch.py \
   ros_domain_id:=64 \
+  run_uuid:=00000000-0000-0000-0000-000000000001 \
+  transport_partition:=dog2_lav1_manual_001 \
   trial_id:=trial_001 \
   result_json:=/tmp/dog2_locomotion_acceptance/trial_001.json
 ```
 
-默认三次 trial 与聚合（对应 Eurobench “至少三次完整试验”）：
+默认十次 trial 与聚合：
 
 ```bash
 ros2 run dog2_bringup locomotion_acceptance_batch \
-  --trials 3 \
+  --trials 10 \
   --domain-start 64 \
   --result-dir /tmp/dog2_locomotion_acceptance_batch
 ```
 
-论文或回归基线建议 `--trials 10`，并在 aggregate 中报告 mean ± std 与
-failure code 分布；不要只展示最好的一次。
+正式稳定性基线建议 `--trials 30`，并在 aggregate 中报告 mean ± std、P95、
+final/provisional rate 与 failure code 分布；不要只展示最好的一次。
 
 ## 12. 机械拓扑冻结保证
 
@@ -410,5 +459,8 @@ failure code 分布；不要只展示最好的一次。
 - 4 个 prismatic rail 与 12 个 revolute joint 名称一致；
 - 每个 movable joint 的 type、parent、child、axis、origin 和 limit 完全一致；
 - link inertial、collision 和 visual 不因仪器开关发生改变。
+- 生成 SDF 的每个 contact sensor selector 均指向同一 link 上存在的 collision；
+- 不允许出现 `__default__` collision/topic，也不允许用 `preserveFixedJoint`
+  为验收改变 fixed-joint lumping。
 
 任一差异都视为验收功能自身回归，禁止继续运行。

@@ -166,6 +166,10 @@ def generate_launch_description() -> LaunchDescription:
             "true",
             "yes",
         )
+        enable_acceptance_contact_sensors = (
+            LaunchConfiguration("enable_acceptance_contact_sensors").perform(context).lower()
+            in ("1", "true", "yes")
+        )
         config_file = LaunchConfiguration("config_file").perform(context)
         spawn_z = LaunchConfiguration("spawn_z").perform(context)
         spawn_z_margin = LaunchConfiguration("spawn_z_margin").perform(context)
@@ -194,6 +198,9 @@ def generate_launch_description() -> LaunchDescription:
                 "robot_param_node": "gz_robot_description_server",
                 "mass_scale": mass_scale,
                 "control_mode": "effort",
+                "enable_acceptance_contact_sensors": (
+                    "true" if enable_acceptance_contact_sensors else "false"
+                ),
             },
         ).toxml()
 
@@ -421,12 +428,39 @@ def generate_launch_description() -> LaunchDescription:
         foot_contact_bridges = []
         if bridge_foot_contact:
             for leg in ("lf", "lh", "rh", "rf"):
-                gz_topic = (
-                    f"/world/{gz_world_name}/model/{model_name}/link/{leg}_foot_link/"
-                    f"sensor/{leg}_foot_contact/contacts"
-                )
+                # The sensor owns an explicit transport topic.  This avoids
+                # coupling the bridge to libsdformat's fixed-joint-lumped link
+                # and sensor topic names.
+                gz_topic = f"/dog2/gz_contact/{leg}_foot"
                 ros_topic = f"/dog2/foot_contact/{leg}"
                 foot_contact_bridges.append(
+                    Node(
+                        package="ros_gz_bridge",
+                        executable="parameter_bridge",
+                        arguments=[
+                            f"{gz_topic}@ros_gz_interfaces/msg/Contacts[gz.msgs.Contacts",
+                            "--ros-args",
+                            "-r",
+                            f"{gz_topic}:={ros_topic}",
+                        ],
+                        output="screen",
+                    )
+                )
+
+        acceptance_contact_bridges = []
+        if enable_acceptance_contact_sensors:
+            acceptance_contacts = [
+                ("/dog2/gz_contact/base", "/dog2/contact/base"),
+                *[
+                    (
+                        f"/dog2/gz_contact/{leg}_tibia",
+                        f"/dog2/contact/{leg}_tibia",
+                    )
+                    for leg in ("lf", "lh", "rh", "rf")
+                ],
+            ]
+            for gz_topic, ros_topic in acceptance_contacts:
+                acceptance_contact_bridges.append(
                     Node(
                         package="ros_gz_bridge",
                         executable="parameter_bridge",
@@ -491,6 +525,7 @@ def generate_launch_description() -> LaunchDescription:
             start_gain_setter_after_effort,
             delayed_spawn_entity,
             *foot_contact_bridges,
+            *acceptance_contact_bridges,
         ]
 
     return LaunchDescription(
@@ -520,6 +555,7 @@ def generate_launch_description() -> LaunchDescription:
             DeclareLaunchArgument("model_name", default_value="dog2"),
             DeclareLaunchArgument("gz_world_name", default_value="dog2_flat_ground"),
             DeclareLaunchArgument("bridge_foot_contact", default_value="true"),
+            DeclareLaunchArgument("enable_acceptance_contact_sensors", default_value="false"),
             OpaqueFunction(function=launch_setup),
         ]
     )

@@ -100,7 +100,7 @@ def generate_launch_description() -> LaunchDescription:
             "controller_mode": LaunchConfiguration("controller_mode"),
             "model_variant": LaunchConfiguration("model_variant"),
             "research_stack": LaunchConfiguration("research_stack"),
-            "use_gui": "false",
+            "use_gui": LaunchConfiguration("use_gui"),
             "rviz": "false",
             "teleop": "false",
             "world": LaunchConfiguration("world"),
@@ -115,6 +115,9 @@ def generate_launch_description() -> LaunchDescription:
             DeclareLaunchArgument("controller_mode", default_value="position"),
             DeclareLaunchArgument("model_variant", default_value="symmetric", choices=["real", "symmetric"]),
             DeclareLaunchArgument("research_stack", default_value="false"),
+            # Headless by default (batch/CI). Pass use_gui:=true to watch the
+            # staged stand/forward/turn run in the Gazebo Sim GUI.
+            DeclareLaunchArgument("use_gui", default_value="false"),
             DeclareLaunchArgument("expect_research_stack", default_value="false"),
             DeclareLaunchArgument("exercise_motion", default_value="false"),
             DeclareLaunchArgument("ros_domain_id", default_value="44"),

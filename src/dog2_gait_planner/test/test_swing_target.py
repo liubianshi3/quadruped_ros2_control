@@ -1,6 +1,10 @@
 import numpy as np
 
-from dog2_gait_planner.swing_target_node import swing_bezier
+from dog2_gait_planner.swing_target_node import (
+    foothold_velocity_offset,
+    swing_bezier,
+    touchdown_height,
+)
 
 
 def test_swing_bezier_starts_and_ends_at_footholds():
@@ -18,6 +22,23 @@ def test_swing_bezier_starts_and_ends_at_footholds():
     assert np.isclose(mid[2], p0[2] + 0.08)
 
 
+def test_swing_bezier_clears_ground_before_horizontal_transfer():
+    p0 = np.array([0.03, -0.14, -0.18])
+    pf = np.array([0.00, -0.11, -0.20])
+
+    lift, lift_vel = swing_bezier(p0, pf, 0.20, 0.5, 0.05)
+    transfer, _ = swing_bezier(p0, pf, 0.50, 0.5, 0.05)
+    lower, lower_vel = swing_bezier(p0, pf, 0.85, 0.5, 0.05)
+
+    assert np.allclose(lift[:2], p0[:2])
+    assert lift[2] > p0[2]
+    assert np.allclose(lift_vel[:2], np.zeros(2))
+    assert np.isclose(transfer[2], p0[2] + 0.05)
+    assert np.allclose(transfer[:2], 0.5 * (p0[:2] + pf[:2]))
+    assert np.allclose(lower[:2], pf[:2])
+    assert lower_vel[2] < 0.0
+
+
 def test_swing_target_payload_shape_contract():
     mask = np.zeros(4)
     pos = np.zeros((4, 3))
@@ -26,3 +47,33 @@ def test_swing_target_payload_shape_contract():
     payload = mask.tolist() + pos.reshape(-1).tolist() + vel.reshape(-1).tolist()
 
     assert len(payload) == 28
+
+
+def test_crawl_foothold_leads_command_within_workspace_limit():
+    offset = foothold_velocity_offset(
+        np.array([-0.05, 0.0]),
+        np.array([-0.05, 0.0]),
+        gait="crawl",
+        raibert_k=0.03,
+        crawl_lead_sec=1.2,
+        maximum=0.06,
+    )
+
+    assert np.allclose(offset, [-0.06, 0.0])
+
+
+def test_trot_foothold_retains_feedback_only():
+    offset = foothold_velocity_offset(
+        np.array([-0.03, 0.01]),
+        np.array([-0.05, 0.0]),
+        gait="trot",
+        raibert_k=0.03,
+        crawl_lead_sec=1.2,
+        maximum=0.06,
+    )
+
+    assert np.allclose(offset, [0.0006, 0.0003])
+
+
+def test_touchdown_search_is_relative_to_measured_liftoff_height():
+    assert np.isclose(touchdown_height(-0.177, 0.005), -0.182)

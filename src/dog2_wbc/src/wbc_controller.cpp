@@ -1,4 +1,6 @@
 #include "dog2_wbc/wbc_controller.hpp"
+
+#include <algorithm>
 #include <cmath>
 #include <chrono>
 #include <iostream>
@@ -117,6 +119,44 @@ Eigen::VectorXd WBCController::computeTorques(
       torques(leg * 3 + 1) += g(femur_v);
       torques(leg * 3 + 2) += g(tibia_v);
       torques(12 + leg) += g(rail_v);
+    }
+  }
+
+  // Repel every rotary joint before it reaches the URDF hard stop. Cartesian
+  // swing tracking and stance J^T*f are otherwise free to command farther
+  // into a limit, which makes a numerically tiny hard-stop penetration fail
+  // acceptance and injects an impact into the next support transition.
+  if (dog2_model_ && params_.joint_limit_margin > 0.0 &&
+    params_.joint_limit_kp > 0.0)
+  {
+    const auto & model = dog2_model_->getModel();
+    constexpr std::array<const char *, 3> kJointSuffixes{
+      "_coxa_joint", "_femur_joint", "_tibia_joint"};
+    for (int leg = 0; leg < 4; ++leg) {
+      for (int joint = 0; joint < 3; ++joint) {
+        const std::string name =
+          std::string(kLegPrefixes[leg]) + kJointSuffixes[joint];
+        const auto joint_id = model.getJointId(name);
+        const int q_index = model.idx_qs[joint_id];
+        const double lower = model.lowerPositionLimit(q_index);
+        const double upper = model.upperPositionLimit(q_index);
+        const double position = leg_states[leg].joint_angles(joint);
+        const double velocity = leg_states[leg].joint_velocities(joint);
+        const double lower_soft = lower + params_.joint_limit_margin;
+        const double upper_soft = upper - params_.joint_limit_margin;
+
+        double correction = 0.0;
+        if (position < lower_soft) {
+          correction =
+            params_.joint_limit_kp * (lower_soft - position) -
+            params_.joint_limit_kd * std::min(velocity, 0.0);
+        } else if (position > upper_soft) {
+          correction =
+            -params_.joint_limit_kp * (position - upper_soft) -
+            params_.joint_limit_kd * std::max(velocity, 0.0);
+        }
+        torques(leg * 3 + joint) += correction;
+      }
     }
   }
 

@@ -56,6 +56,9 @@ public:
     bool gravity_compensation;
     Eigen::Vector3d swing_kp;
     Eigen::Vector3d swing_kd;
+    double joint_limit_margin;
+    double joint_limit_kp;
+    double joint_limit_kd;
 
     // QP权重
     double w_dynamics;          // 动力学一致性权重
@@ -70,6 +73,9 @@ public:
       gravity_compensation(true),
       swing_kp(300.0, 300.0, 300.0),
       swing_kd(8.0, 8.0, 8.0),
+      joint_limit_margin(0.12),
+      joint_limit_kp(35.0),
+      joint_limit_kd(1.5),
       w_dynamics(1000.0), w_foot_tracking(10.0),
       w_regularization(0.01) {}
   };

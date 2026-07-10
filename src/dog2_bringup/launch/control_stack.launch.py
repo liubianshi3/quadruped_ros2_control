@@ -17,6 +17,9 @@ def generate_launch_description() -> LaunchDescription:
     research_mpc_config = PathJoinSubstitution(
         [FindPackageShare("dog2_bringup"), "config", "research_mpc.yaml"]
     )
+    flat_locomotion_config = PathJoinSubstitution(
+        [FindPackageShare("dog2_bringup"), "config", "flat_locomotion.yaml"]
+    )
     control_stack_use_sim_time = PythonExpression(
         [
             "'false' if '",
@@ -35,12 +38,35 @@ def generate_launch_description() -> LaunchDescription:
     ])
     xacro_file = PathJoinSubstitution([FindPackageShare("dog2_description"), "urdf", xacro_filename])
     robot_description = ParameterValue(Command(["xacro ", xacro_file]), value_type=str)
+    flat_locomotion_condition = IfCondition(
+        PythonExpression(
+            [
+                "'",
+                LaunchConfiguration("research_stack"),
+                "' == 'true' and '",
+                LaunchConfiguration("flat_locomotion"),
+                "' == 'true'",
+            ]
+        )
+    )
+    legacy_research_condition = IfCondition(
+        PythonExpression(
+            [
+                "'",
+                LaunchConfiguration("research_stack"),
+                "' == 'true' and '",
+                LaunchConfiguration("flat_locomotion"),
+                "' != 'true'",
+            ]
+        )
+    )
 
     return LaunchDescription(
         [
             DeclareLaunchArgument("use_sim_time", default_value="true"),
             DeclareLaunchArgument("model_variant", default_value="symmetric", choices=["real", "symmetric"]),
             DeclareLaunchArgument("research_stack", default_value="true"),
+            DeclareLaunchArgument("flat_locomotion", default_value="true"),
             DeclareLaunchArgument("controller_mode", default_value="position"),
             DeclareLaunchArgument("estimator_config", default_value=estimator_config),
             DeclareLaunchArgument("research_mpc_config", default_value=research_mpc_config),
@@ -86,7 +112,10 @@ def generate_launch_description() -> LaunchDescription:
                         [FindPackageShare("dog2_gait_planner"), "launch", "gait_scheduler.launch.py"]
                     )
                 ),
-                launch_arguments={"use_sim_time": control_stack_use_sim_time}.items(),
+                launch_arguments={
+                    "use_sim_time": control_stack_use_sim_time,
+                    "model_variant": model_variant,
+                }.items(),
             ),
             Node(
                 package="dog2_mpc",
@@ -146,7 +175,7 @@ def generate_launch_description() -> LaunchDescription:
                     },
                 ],
                 remappings=[("/dog2/odom", "/dog2/state_estimation/odom")],
-                condition=IfCondition(LaunchConfiguration("research_stack")),
+                condition=legacy_research_condition,
             ),
             Node(
                 package="dog2_wbc",
@@ -223,7 +252,41 @@ def generate_launch_description() -> LaunchDescription:
                     ("/joint_group_effort_controller/commands", "/dog2/wbc/joint_effort_command"),
                     ("/sliding_joint_effort_controller/commands", "/dog2/wbc/rail_effort_command"),
                 ],
-                condition=IfCondition(LaunchConfiguration("research_stack")),
+                condition=legacy_research_condition,
+            ),
+            Node(
+                package="dog2_mpc",
+                executable="flat_mpc_node",
+                name="flat_mpc_node",
+                output="screen",
+                parameters=[
+                    flat_locomotion_config,
+                    {
+                        "use_sim_time": ParameterValue(
+                            control_stack_use_sim_time,
+                            value_type=bool,
+                        ),
+                        "robot_description": robot_description,
+                    },
+                ],
+                condition=flat_locomotion_condition,
+            ),
+            Node(
+                package="dog2_wbc",
+                executable="flat_wbc_node",
+                name="flat_wbc_node",
+                output="screen",
+                parameters=[
+                    flat_locomotion_config,
+                    {
+                        "use_sim_time": ParameterValue(
+                            control_stack_use_sim_time,
+                            value_type=bool,
+                        ),
+                        "robot_description": robot_description,
+                    },
+                ],
+                condition=flat_locomotion_condition,
             ),
             Node(
                 package="dog2_bringup",

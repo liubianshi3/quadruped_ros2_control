@@ -1,5 +1,315 @@
 # DEVELOPMENT_LOG
 
+## 2026-07-10 22:10 LAV2-R7C4 收口 + 独立平地 crawl 栈重写（未通过行走验收）
+
+### 目标、边界与最终结论
+
+- 本轮先修复真实行走验收器，再以修复后的验收器重写平地 WBC+MPC，目标行为参考
+  `/home/dell/文档/xwechat_files/wxid_i9xr7jia0ad122_25f0/msg/video/2026-06/8444c7f527292c7b3f187261852da5214.mp4`。
+- 架构决策为：新增独立 `flat_locomotion` 平地 crawl 控制栈，保留旧
+  `effort_research` crossing 栈；不在旧 crossing 控制器上继续叠加平地补丁。
+- 目标验收为完整 LAV：站立、直行、停稳、返回、转向，连续 3 次通过，之后再做
+  10 次批量统计。
+- **截至停工时没有达到该目标**：正式 LAV 通过次数仍为 0，尚未进入三连测或
+  十连测。当前机器人可稳定完成 LF、RF 两个前腿 crawl 摆动，但在第三拍 LH
+  卸载前被静态支撑门安全阻止，最终 `STAGE_TIMEOUT`。
+- 验收器质量阈值仍是 `provisional`。即便安全门和路线门将来全部通过，也只能先
+  得到 `PASS_SAFETY_ROUTE_PROVISIONAL`；在带标签样本校准、人工审查和 holdout
+  复核前，不能宣称正式 `PASS_LOCOMOTION_BASELINE`。
+
+### 验收器 LAV2-R7C4 完成项
+
+1. **判定内核**
+   - 新增无 ROS 依赖的 `acceptance_oracle.py`，集中固定状态迁移、连续硬门、
+     joint limit、站立漂移、停止稳定、净转角和 contact pulse 锁存判定。
+   - `STAND` 连续检查平面/垂向速度、三轴角速度和漂移；停止阶段不再只看平面速度；
+     `FINAL_STOP` 检查停止后的净 yaw，历史峰值不能代替最终结果。
+   - 上游 odom twist 不再作为验收速度真值；线速度、角速度由 stamped Gazebo pose
+     差分得到，消除世界系/机体系歧义。
+   - 协议、阶段、指标积分使用 simulation time；freshness、仿真停滞和总看门狗
+     使用 wall time。
+
+2. **contact 仪器链**
+   - base、tibia、foot sensor 显式绑定生成 SDF 中真实存在的 collision，并使用
+     `/dog2/gz_contact/*` 自有 Gazebo transport topic。
+   - 非法 base/tibia contact 按布尔 event 立即锁存；Fortress 无 wrench 时不伪造
+     1 N。
+   - `WAIT_SETTLE` 要求四足均实际观测到接触；只有 publisher 存在不能通过 readiness。
+   - generated-SDF 回归验证 sensor selector、collision 可解析和仪器开关前后机械
+     签名一致；没有用 `preserveFixedJoint` 改变被测动力学。
+
+3. **结果与校准语义**
+   - result schema 升级到 v2；增加 heading error、stance episode slip、支撑足速度
+     P95、计划摆动误触、contact mismatch streak、turn final error 等指标。
+   - 运行时从同一 URDF 读取 hard limits、质量、碰撞尺寸和 foot radius；symmetric
+     足半径真值为 0.020 m。
+   - 新增 `locomotion_acceptance_calibrate.py`：只接受带 `accept/reject` 标签且
+     SHA-256 完整的 schema v2 报告；样本不足或正负类重叠即拒绝。工具只生成
+     candidate，不会自动开启 calibrated gate。
+
+4. **批处理可靠性**
+   - 每轮建立 UUID 目录，每 trial 隔离 ROS domain 和
+     `GZ_PARTITION`/`IGN_PARTITION`。
+   - CSV/JUnit 原子写入后，JSON 最后作为 commit marker；batch 校验 schema、
+     run UUID、trial ID、mtime、完成标志和 artifact SHA-256。
+   - aggregate 分开统计正式通过、provisional、locomotion fail 和 infrastructure
+     fail；默认 10 次并输出 mean/std/min/p95/max。
+   - 正常退出、超时和子进程异常路径会清理 trial 进程组，并有“父进程先退出仍回收
+     descendant”的回归测试。
+   - **已知边界**：IDE 从外部强制中断 batch 父进程时，Python `finally` 可能没有
+     执行。run22/run25 的人工中断均需额外检查进程组；run22 遗留的旧 Gazebo
+     直接造成 run23 `READINESS_TIMEOUT`。停工前已手动终止 run25 全进程组。
+
+5. **验收器验证证据**
+   - `dog2_description + dog2_bringup` 构建通过。
+   - 验收器相关 `colcon test`：46 tests，0 errors，0 failures。
+   - 独立 runtime trial 已证明四足 contact/no-contact 都可观察，
+     `contact_mismatch_ratio=0.0466`；同一轮因真实
+     `tilt=0.5979 rad > 0.55 rad` 正确输出 `FAIL_LOCOMOTION/TILT_LIMIT`。
+   - 该结果证明验收器不再把翻滚乱窜判成行走 PASS，但不代表控制器已经会走。
+
+### 新增独立 `flat_locomotion` 控制栈
+
+1. **launch 与配置隔离**
+   - `control_stack.launch.py` 可选择新 `flat_locomotion` 或旧
+     `effort_research`；旧 crossing 路径保留。
+   - 新增 `flat_locomotion.yaml`，集中 MPC/WBC 参数；平地 rail 仍由独立位置控制器
+     锁零，活动力矩输出为 12 个旋转关节。
+
+2. **接触感知 crawl 调度器**
+   - `ContactAwareCrawl` 使用 `SHIFT → SWING → SETTLE` 状态机。
+   - 每次摆动必须先看到真实离地，再看到真实 touchdown；early/late contact 不再
+     仅依靠时钟掩码猜测。
+   - 机身 shift 在 touchdown 后保持，并平滑过渡到下一支撑三角形，避免参考点瞬间
+     回零造成 2–3 cm 反向跳变。
+   - 实测初始 COM 下先抬后腿需要负法向力，因此腿序改为
+     `LF → RF → LH → RH`。`body_shift.vector.z` 携带下一摆动腿离散码，供 MPC
+     用实测三足几何决定是否允许卸载。
+
+3. **摆动足目标**
+   - 轨迹改为“垂直抬升 → 保持净空水平转移 → 垂直下落”，避免原 Bezier 在水平
+     移动阶段拖脚。
+   - touchdown z 不再写死 `-0.205/-0.210 m`，而是
+     `measured_liftoff_z - touchdown_overshoot`。run19 中 RH 实际离地高度
+     `-0.177 m`、旧目标 `-0.210 m`，会要求额外下探 3.3 cm 并把 femur 推到
+     `2.746 rad`；相对高度搜索消除了这一不可达目标。
+   - 足端起点来自当前 Pinocchio FK，不从上一次 nominal 命令跳变。
+   - 当前 `touchdown_overshoot=0.005 m`；2 cm 过冲会把“摆动腿”以刚性 PD
+     压在地面，形成约 20 N 持续水平锚定力。
+
+4. **平地 centroidal MPC**
+   - 新增 `FlatLocomotionMPC` 与 `flat_mpc_node`：50 Hz、50 步 horizon、
+     `dt=0.02 s`，用 OSQP 分配 4 足地面反力。
+   - 约束包含接触 mask、法向力上下限和摩擦棱锥；输入足端力臂由当前 Pinocchio
+     FK 和当前 COM 实时计算，不再依赖固定名义落足点。
+   - 新增三足静态可行性门：对候选摆动腿的其余三足解
+     `Σfz=mg, Σy·fz=0, Σ(-x)·fz=0`，所有法向力达到安全下限后才允许卸载。
+   - readiness 同时检查平面速度、roll/pitch 角速度和 tilt；不能只因位置参考接近
+     就开始摆腿。
+   - 新增 measured-support adaptive body shift，把全局路径积分和局部支撑三角形
+     对中分离；当前前后/横向上限分别为 `0.12/0.06 m`。
+   - 节点内部 freshness 改用 `std::chrono::steady_clock`，避免 ROS sim time
+     启停造成消息新鲜度误判。
+
+5. **平地 WBC**
+   - 新增 `flat_wbc_node`，将 MPC 世界系足力旋回 base frame，再通过 URDF/Pinocchio
+     3×4 腿雅可比实现 `τ=-Jᵀf`。
+   - 摆动腿使用 Cartesian PD；所有活动腿增加按当前倾角旋转后的静态重力补偿。
+   - 新增 URDF joint soft limit：进入 hard limit 前 `0.12 rad` 区域即施加恢复
+     力矩，参数为 `kp=35.0, kd=1.5`。
+   - run13 的 `rh_femur_joint` 仅越 hard limit 约 19 µrad，正是该软限位修复的
+     直接触发证据。
+
+### 关键失败链与对应修复
+
+| 运行 | 结果/证据 | 根因判断 | 处理 |
+|---|---|---|---|
+| run9–10 | `TILT_LIMIT`；三足切换力矩失配、摆足净空仅毫米级 | shift 回零突变、拖脚、三足最小力过高 | shift 连续化；三段摆动轨迹；降低 allocator 的 `min_stance_force`；readiness 加动态稳定门 |
+| run11 | `STAGE_TIMEOUT`，固定等待不可卸载腿 | 初始后腿卸载在静力学上需要负法向力 | 腿序改为 LF、RF、LH、RH；增加实测三足可行性门 |
+| run13 | 已前进约 0.249 m、约 2.5 个 crawl cycle 后 `JOINT_POSITION_LIMIT` | RH femur 顶到 URDF hard stop | WBC joint soft limit |
+| run14 | `STAGE_TIMEOUT` | 局部支撑对中直接改写全局路径参考，控制器又把机器人拉回 | 拆成 `integrated_position_reference_ + adaptive_body_shift_world_` |
+| run15 | `ROUTE_CORRIDOR`，横向偏差约 0.0801 m | 局部 shift 累积横漂 | 横向 shift 有界；提高卸载静态裕量 |
+| run20/23 | `FAIL_INFRASTRUCTURE/READINESS_TIMEOUT` | orphan Gazebo 占用资源；run23 为 run22 外部中断遗留 | batch 进程组清理 + 回归测试；外部硬中断后人工清理 |
+| run19/21 | 后腿目标 z 不可达；LH 卸载 `static_fz≈1.75 N < 15 N` | 固定 touchdown 高度；支撑三角形边缘裕量不足 | touchdown 改相对离地高度；前后 shift 上限增至 0.12 m |
+| run24 | clean trial：LF、RF 均完成；LH 前最终 `static_fz=2.00 N < 15 N`，`STAGE_TIMEOUT` | 6 cm crawl velocity lead 把两只前脚提前放在 COM 前方，LF–RH 对角线仍穿过 COM 边缘 | 诊断性将 `crawl_velocity_lead_sec` 从 1.2 改为 0.0 |
+| run25 | 启动 18 s 后人工中断，无报告 | 用户要求停工 | 终止整个进程组；该 0.0 lead 改动尚未得到 runtime 结论 |
+
+### 最近一次完整 trial（run24）证据
+
+- 报告：
+  `/tmp/dog2_flat_rewrite_run24/run_20260710T140601Z_1a52fe05/trial_001.json`
+- 结果：`FAIL_LOCOMOTION / STAGE_TIMEOUT / OUTBOUND`。
+- 最终路线投影 `0.07975 m`，横向偏差 `-0.01895 m`，yaw 误差
+  `0.00543 rad`。
+- 最终 tilt `0.16936 rad`，线/角速度均已收敛到近零；没有因为翻倒、侧漂或
+  非法 base/tibia contact 失败。
+- joint effort 峰值比例 `0.334`，velocity 峰值比例 `0.107`；position margin
+  仅有约 `-4.1e-10` 的仿真数值级误差。
+- LF、RF touchdown 后，准备卸载 LH 的三足静态法向力最终稳定在约
+  `[52.12, 63.62, 2.00] N`；第三足未达到配置的 `15 N` 安全门，因此调度器
+  正确停止而非冒险抬腿。
+- MPC 当时参考约 `[-0.183, 0.045] m`，机身约 `[-0.122, 0.019] m`，继续加大
+  参考主要转化为 pitch/roll（约 `-0.145/-0.088 rad`），未获得所需平移。
+- 该日志把下一根因收敛到落脚几何/支撑重心，不应继续盲目扩大 body-shift 上限。
+
+### 测试、当前工作树与续接点
+
+- 已验证：
+  - LAV/description/bringup：46 tests 全过；
+  - 最新 gait scheduler + swing target：`14 passed`；
+  - MPC force allocation、静态支撑门、WBC URDF Jacobian、重力补偿和软限位核心
+    C++ 测试通过；
+  - 正式 runtime LAV：0 次通过。
+- 当前诊断参数：
+  - `support_ready_min_normal_force=15.0 N`
+  - `support_center_max_forward_offset=0.12 m`
+  - `support_center_max_lateral_offset=0.06 m`
+  - `touchdown_overshoot=0.005 m`
+  - `crawl_velocity_lead_sec=0.0`（**仅诊断，run25 被中断，未验证**）
+- 明日恢复时第一步不是直接三连测，而是：
+  1. 确认无遗留 `ign gazebo`；
+  2. 以独立 domain/partition 单跑一次 run25 等价 trial；
+  3. 比较 LF/RF touchdown 后的 `feet_xy` 和 LH 三足 `static_fz` 是否显著高于
+     run24 的 2 N；
+  4. 若仍不足，设计“启动重心重排落脚”与稳态 velocity lead 分离，不能直接降低
+     15 N 门槛冒险；
+  5. 完整四拍稳定后再恢复直行距离、停稳、返回、转向，最后做 3 连和 10 连。
+
+## 2026-07-10 17:16 LAV1-R2 验收器可靠性收口
+
+- **结论口径**
+  - 验收结果 schema 升级为 v2；质量阈值尚未用带标签数据校准，因此当前配置
+    `calibration_status=provisional`，即使安全和路线任务全部通过也只能输出
+    `PASS_SAFETY_ROUTE_PROVISIONAL`，且 `passed=false`。
+  - 正式 `PASS_LOCOMOTION_BASELINE` 只在 calibration profile 完整、质量数据存在且
+    所有 calibrated gate 通过时开放。
+
+- **Gazebo contact 数据链**
+  - contact sensor 改为挂在 fixed-joint lumping 后保留的
+    `*_tibia_drive_frame`，显式选择生成 SDF 中真实存在的 tibia/foot collision。
+  - sensor 使用 `/dog2/gz_contact/*` 自有 transport topic，bridge 不再依赖 Gazebo
+    自动生成的 world/model/link/sensor 路径。
+  - base/tibia 非法接触按布尔 event 回调锁存；Fortress 没有 wrench 时不再伪造 1 N。
+  - `WAIT_SETTLE` 要求四足都实际观察到正接触，只有 publisher 存在不能通过健康门。
+  - generated-SDF 回归同时验证 sensor→collision 可解析以及开关仪器前后机械签名一致；
+    保持 fixed-joint lumping，未使用 `preserveFixedJoint` 改变被测动力学。
+
+- **判定与时间语义**
+  - 新增无 ROS 依赖的 `acceptance_oracle.py`，集中 hard gate、joint limit、稳定性、
+    stand drift、净 turn yaw、固定状态迁移和 contact pulse 锁存判定。
+  - STAND 连续检查漂移、平面速度、垂向速度和三轴角速度；STOP 同时检查垂向和三轴
+    角速度；FINAL_STOP 检查停止后的净 yaw 误差，历史峰值不能通过。
+  - 验收线/角速度由 stamped Gazebo pose 差分，消除上游 odom twist 坐标系歧义。
+  - 协议、阶段和积分使用 simulation time；freshness、sim stall 与总看门狗使用
+    wall time。
+  - 质量指标增加 heading error、stance episode slip、支撑足速度 P95、计划摆动
+    误触、contact mismatch streak 和 turn final error。
+  - 质量尺度从运行时展开 URDF 读取；symmetric 实测 foot radius 为 0.020 m，不再
+    使用配置旧值 0.012 m。
+  - 新增带 accept/reject 标签的校准候选生成器；输入报告必须完整并记录 SHA-256，
+    样本不足或类别重叠会拒绝生成。工具最高只输出 candidate，必须人工审查和独立
+    holdout 后才能把配置改成 calibrated。
+
+- **批量与报告完整性**
+  - 每次 batch 创建 UUID 子目录，并为每 trial 隔离 ROS domain 与
+    `GZ_PARTITION`/`IGN_PARTITION`。
+  - 移除 launch 中全局 `pkill`；由 launch shutdown 和 batch 进程组清理本轮子进程。
+  - CSV/JUnit 先原子写入，JSON 作为 commit marker 最后写入；batch 校验 schema、
+    run UUID、trial ID、mtime、完成标志和 artifact SHA-256，旧报告不能污染新结果。
+  - 聚合分别报告 final pass、provisional、locomotion fail、infrastructure fail，
+    并增加指标 P95；默认 trial 数由 3 提高到 10。
+
+- **验证证据**
+  - `colcon build --packages-select dog2_description dog2_bringup --symlink-install`：PASS。
+  - `colcon test`：46 tests，0 errors，0 failures；覆盖指标边界、状态迁移、非法
+    contact 短脉冲、缺 topic/joint、旧/错 UUID 报告、artifact 篡改和 SDF 机械 A/B。
+  - 独立 runtime trial（domain 170 + 独立 Gazebo partition）成功通过 contact 健康门，
+    四足均观察到 contact/no-contact，`contact_mismatch_ratio=0.0466`，证明此前
+    “四足恒 0”的断链已修复。
+  - 同一 trial 在 OUTBOUND 因真实 `tilt=0.5979 rad > 0.55 rad` 诚实输出
+    `FAIL_LOCOMOTION/TILT_LIMIT`；验收器修复不等于机器人已经会稳定行走。
+
+## 2026-07-10 14:12 垂直支撑守恒改造 + GUI 复核推翻旧行走验收 + 1P+3R 结构审计
+
+- **本轮范围与最终口径**
+  - 延续 07-09 run39-68 的高度颠簸诊断，修复 `applyVerticalSupport()` 中“目标总力与实际分腿总力不守恒”的确定性代码问题。
+  - 增加同一套 smoke 流程的 Gazebo GUI 开关并做目视复核。
+  - GUI 复核证明历史 smoke 的 `PASS` **不能代表机器人正确行走**：机器人存在严重翻滚、侧漂和腿部乱动。本文后续将 run69-86 的结果统一称为“旧 smoke 门通过率”，不再称“行走通过率”。
+  - 对 Dog2 的 `P–Rz–Ry–Ry`（每腿 `1P+3R`）特殊结构及现有代码适配程度做了专项审计。
+
+- **垂直支撑总力守恒改造**
+  - 文件：`src/dog2_mpc/src/mpc_node_complete.cpp`
+  - `support_count == 2` 时，旧逻辑对两腿独立钳位，偏置分配会把被钳掉的力直接丢失；改为总力守恒区间钳位，第二腿承接余量。
+  - `support_count >= 3` 的 KKT 分配在 WALKING 下增加双向守恒修复：
+    - 钳位后超发时等比例缩回；
+    - 钳位后短缺时按各腿帽下余量回填；
+    - HOVER 保持已验证的原路径，不扩大改动面。
+  - 上载斜坡在 WALKING 下增加总力守恒回填：优先把被斜坡扣下的力交给仍有余量的旧支撑腿；没有其他承载腿时允许突破斜坡，避免换腿瞬间凭空丢失支撑。
+  - 增加深坠 catch：`h_err > 0.03 || vz < -0.25` 时释放姿态微调预留，使单腿垂直力帽由 67 N 恢复到 95 N；`[vsplit]` 日志增加 `catch=`。
+  - 文件：`src/dog2_bringup/config/research_mpc.yaml`
+    - 更新 `vertical_support_load_rate` 注释，明确 WALKING 下斜坡是“换载受限、总力守恒”，而不是允许总支撑力缺口。
+
+- **守恒改造的有效结论与无效结论**
+  - 有效结论：run64-68 的 `[vsplit]` 统计中，目标与实发总力短缺平均约 19%–23%、最大 66%；改造后的 run73-86 中，日志层总力短缺约 0%、最大约 0.6%。这证明**分配/整形器的算术守恒问题已修复**。
+  - 无效结论（本轮已撤回）：旧 smoke 门统计从约 1/3 提升到 8/11，不能写成“真实行走重复率提升到 73%”。旧 smoke 只证明若干宽松终点门被满足，不能证明姿态、方向、触地和步态正确。
+  - `colcon build --packages-select dog2_mpc --symlink-install`：PASS。
+
+- **GUI smoke 支持与实际复核**
+  - 文件：`src/dog2_bringup/launch/smoke_test.launch.py`
+    - 原来向 `system.launch.py` 写死 `use_gui=false`；
+    - 现改为声明并透传 `use_gui`，默认仍为 `false`，不改变批处理/CI 行为；
+    - 可用 `use_gui:=true` 观看同一 stand → forward → turn 流程。
+  - `colcon build --packages-select dog2_bringup --symlink-install`：PASS。
+  - GUI run 的旧 smoke 输出为 PASS（turn yaw 2.957 rad、z=0.211 m、rail lock 1.4 mm），但目视与日志均显示运动完全不合格：
+    - tilt 均值 0.83 rad（约 48°），峰值 2.67 rad（约 153°）；
+    - `up_z` 最低 −0.89，34 个姿态采样中 15 个 `<0.5`，其中 10 个 `<0`（躯干完全倒置）；
+    - forward 阶段起点约 `(-0.061, 0.000)`，turn 阶段起点约 `(-0.589, -1.948)`，主要是近 2 m 侧向乱窜而非受控直行。
+
+- **旧 smoke 验收器缺陷（`dog2_bringup/smoke_check.py`）**
+  - forward 计算了沿初始朝向的 `projected_distance`，但真正 PASS 门只检查 `hypot(dx,dy)`；向任意方向乱窜超过 0.2 m 都能通过。
+  - turn 使用历史峰值 `yaw_delta`；翻滚或来回扫过 yaw 也可满足门限。
+  - forward/turn 不检查 roll、pitch、tilt、`up_z`、侧漂、真实接触、足端滑移或摆动净空。
+  - 名为 `gait_quality` 的严格门尚是占位实现：roll/pitch/yaw-rate/rail-delta/stance-slip 写入硬编码 0，所谓 swing clearance 实际使用机身 `pose.z`。
+  - 因此此前文档中所有“全流程 PASS”只能解释为**旧 smoke 集成门通过**；真正 locomotion acceptance 尚未实现。
+
+- **建议的新验收分层**
+  - `stack_smoke`：只验节点、话题、控制器和数据流，禁止宣称“会走”。
+  - `locomotion_acceptance`：连续硬门至少包含躯干非足端不触地、tilt/up_z、身高、关节/力矩限位、真实接触数；质量门包含真实机头方向投影、侧漂、yaw 漂移、速度跟踪、支撑足滑移、摆动足净空和计划/真实接触错配。
+  - 平地顺序：站立 → 原地踏步 → 0.05 m/s 直行 → 停止 → 原地转向；前一阶段未达到 9/10 前不进入下一阶段。
+  - 仿真验收使用 Gazebo ground truth（pose/contact/foot world velocity），不能只用状态估计输出。
+
+- **特殊机构审计：机械真值**
+  - Dog2 每腿为 `P–Rz–Ry–Ry`：纵向 rail + coxa yaw + femur/tibia pitch；主流 Unitree/ANYmal 为固定髋座 `Rx–Ry–Ry`（HAA/HFE/KFE）。
+  - 现行 symmetric URDF 展开真值：
+    - `lf [0, +0.111]`
+    - `lh [-0.111, 0]`
+    - `rh [-0.111, 0]`
+    - `rf [0, +0.111]`
+  - 前腿安装在 base x<0，后腿在 x>0；项目文档也写物理机头为 −X，但腿宏中仍有 REP-103 “+X forward”文字，前向语义必须统一。
+
+- **现有代码对特殊结构的实际适配程度**
+  - URDF/Pinocchio、4DOF IK/FK、生产 WBC 的 3×4 雅可比已明确支持 `1P+3R`。
+  - 当前平地研究栈把 rail 交给独立位置控制器锁零，mux 设置 `include_rail_in_output=False`；WBC 虽计算 rail 力，但活动输出只驱动 12 个旋转关节。
+  - MPC 使用 12 维 SRBD + 4 个 rail 位置的 16 维状态，但 rail 速度是外生输入、足端耦合仍简化为 x 方向平移，并非完整联合优化。
+  - 当前活动步态规划器只生成 rail=0 下的三维足端目标，没有 rail 协调；`spider_robot_controller` 的 `CRUISE_3DOF/OBSTACLE_4DOF` 不是本轮 GUI smoke 的活动节点。
+  - `joint_names.py` 把真实 coxa yaw 映射为 `hip_roll`，属于危险的语义借名；此外 `mpc_controller.cpp` 的 crossing corridor 仍硬编码旧 rail 符号，rh/rf 与现行 URDF 相反。
+
+- **机械结构决策**
+  - 当前乱窜不足以证明 `P–Rz–Ry–Ry` 机械上不可行；接触反馈、坐标语义和验收器仍有明确软件缺口。
+  - 若优先目标是主流稳定四足行走，同时保留窗口穿越能力，候选折中结构为 `P–Rx–Ry–Ry`：rail 仅作为低频形态变量，平地锁定；三个旋转副与主流 HAA/HFE/KFE 对齐。
+  - 改机械前先做三组等条件仿真 A/B：
+    1. 当前 `P–Rz–Ry–Ry`，rail 真 fixed；
+    2. `P–Rx–Ry–Ry`，rail 真 fixed；
+    3. 标准 `Rx–Ry–Ry`。
+  - 比较工作空间、雅可比条件数、静态所需力矩、低速 crawl 的 tilt/滑移/方向跟踪及 10 次重复率，再决定是否更换旋转轴结构。
+
+- **本轮未完成 / 下一步**
+  1. 旧 smoke 尚未改造成真实 gait acceptance；当前不可宣称 Dog2 已会稳定行走。
+  2. 接触感知（Gazebo contact ground truth → early/late touchdown）尚未实现。
+  3. rail 限位硬编码、机头轴语义和 coxa/hip_roll 命名尚未收口。
+  4. 三种机械拓扑的仿真 A/B 尚未建立。
+  5. 本轮代码与文档均仍在工作区，未提交。
+
 ## 2026-07-08 11:35 导轨位置锁根因修复 + pinocchio 4.0 迁移，effort 研究栈冒烟全绿
 
 - **背景与目标**

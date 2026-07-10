@@ -1,21 +1,35 @@
 dog2_gait_scheduler:
   ros__parameters:
     use_sim_time: true
-    gait: trot
-    # Support-first trot: the trunk free-tips about the diagonal support
-    # line during 2-leg phases (COM off the line -> ~3 N*m about the one
-    # axis two contacts cannot actuate; ~0.9 rad/s builds in 0.2 s), and
-    # the 4-leg overlap must absorb that angular momentum with the fz
-    # attitude trim. 0.8s/0.5duty fell in the first half cycle (run40);
-    # duty 0.6 diverged in 2-3 cycles (run43/44); duty 0.7 survived the
-    # forward stage but accumulated tip over ~8 strides (run50). 0.75
-    # spends half of every cycle in 4-leg recovery (0.15 s two-leg /
-    # 0.15 s four-leg) -- slower steps, but statically recoverable.
-    cycle_time: 0.6
+    # The reference video is a slow four-beat crawl, not a diagonal trot.
+    # Exactly one foot swings after the body reference has shifted into the
+    # remaining support triangle. A foot cannot become stance again until
+    # the contact sensor observed both release and touchdown.
+    gait: crawl
+    # Used by the swing-target node: 1.8 * (1-duty=0.25) = 0.45 s swing.
+    # The complete contact-aware four-leg crawl cycle is 4.4 s because each
+    # leg also receives a 0.45 s pre-shift and 0.20 s settle window.
+    cycle_time: 1.8
     duty_factor: 0.75
-    # 50 Hz: at 20 Hz a 0.5 s cycle only gets 10 mask samples, i.e. up to
-    # 50 ms of stance/swing switching jitter fed to the WBC and MPC.
     publish_rate: 50.0
+    contact_aware: true
+    contact_freshness_sec: 0.20
+    crawl_pre_shift_sec: 0.45
+    crawl_swing_sec: 0.45
+    crawl_settle_sec: 0.20
+    crawl_max_swing_sec: 1.20
+    crawl_body_shift_scale: 0.65
     cmd_vel_topic: /cmd_vel
     contact_phase_topic: /dog2/gait/contact_phase
     gait_command_topic: /dog2/gait/command
+    body_shift_topic: /dog2/gait/body_shift
+    body_shift_error_topic: /dog2/mpc/body_shift_error
+    # MPC publishes zero only after the measured three-foot support solve has
+    # positive load on every remaining foot and body motion/tilt has settled;
+    # infinity means unloading the encoded upcoming leg is not yet safe.
+    body_shift_tolerance_m: 0.016
+    shift_error_freshness_sec: 0.20
+    foot_contact_topic_lf: /dog2/foot_contact/lf
+    foot_contact_topic_lh: /dog2/foot_contact/lh
+    foot_contact_topic_rh: /dog2/foot_contact/rh
+    foot_contact_topic_rf: /dog2/foot_contact/rf
