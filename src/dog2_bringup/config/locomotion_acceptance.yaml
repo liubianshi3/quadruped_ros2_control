@@ -1,0 +1,72 @@
+dog2_locomotion_acceptance:
+  ros__parameters:
+    protocol_id: dog2_lav1_flat
+    trial_id: trial_001
+
+    # Gazebo ground-truth and control streams. Do not replace these with the
+    # estimator's all_true contact state or MPC force commands.
+    odom_topic: /odom
+    dynamic_pose_topic: /dog2/dynamic_pose_tf
+    joint_state_topic: /joint_states
+    contact_phase_topic: /dog2/gait/contact_phase
+    effort_command_topic: /effort_controller/commands
+    cmd_vel_topic: /cmd_vel
+    foot_world_frame: odom
+    allow_tf_foot_fallback: true
+    foot_contact_topic_lf: /dog2/foot_contact/lf
+    foot_contact_topic_lh: /dog2/foot_contact/lh
+    foot_contact_topic_rh: /dog2/foot_contact/rh
+    foot_contact_topic_rf: /dog2/foot_contact/rf
+    base_contact_topic: /dog2/contact/base
+    tibia_contact_topic_lf: /dog2/contact/lf_tibia
+    tibia_contact_topic_lh: /dog2/contact/lh_tibia
+    tibia_contact_topic_rh: /dog2/contact/rh_tibia
+    tibia_contact_topic_rf: /dog2/contact/rf_tibia
+    robot_description_node: robot_state_publisher
+
+    poll_period_sec: 0.05
+    freshness_timeout_sec: 1.0
+    contact_event_timeout_sec: 0.10
+    wait_ready_timeout_sec: 60.0
+    wait_settle_timeout_sec: 45.0
+    total_timeout_sec: 180.0
+
+    # Fixed protocol. Distances are normalized by the current symmetric trunk
+    # dimensions rather than copying Eurobench's ANYmal-sized 3 m ramp.
+    body_length_m: 0.342
+    body_width_m: 0.160
+    robot_mass_kg: 12.0028
+    route_length_body_lengths: 3.0
+    corridor_half_width_body_widths: 0.5
+    return_tolerance_body_lengths: 0.25
+    turn_translation_limit_body_lengths: 0.5
+
+    # Physical nose is base_link -X in the current project contract.
+    forward_command_x: -0.05
+    turn_command_z: 0.15
+    turn_target_yaw_rad: 1.57079632679
+    motion_timeout_factor: 2.5
+
+    settle_duration_sec: 2.0
+    stand_duration_sec: 5.0
+    stop_duration_sec: 3.0
+    settle_max_linear_speed_mps: 0.05
+    settle_max_yaw_rate_radps: 0.10
+
+    # REFERENCE_HARD: Isaac Lab / legged_gym illegal-contact convention.
+    illegal_contact_force_n: 1.0
+    # PROJECT_SAFETY: rejects the observed old-smoke flip/sideways false PASS.
+    max_tilt_rad: 0.55
+    min_up_z: 0.85252452206  # cos(0.55)
+    body_height_min_m: 0.12
+    body_height_max_m: 0.40
+    # MISSION_REQUIREMENT: flat locomotion keeps every rail locked at zero.
+    max_rail_lock_error_m: 0.005
+    enforce_tibia_contact: true
+
+    ground_z_m: 0.0
+    foot_radius_m: 0.012
+
+    result_json: /tmp/dog2_locomotion_acceptance/trial_001.json
+    samples_csv: /tmp/dog2_locomotion_acceptance/trial_001_samples.csv
+    junit_xml: /tmp/dog2_locomotion_acceptance/trial_001.junit.xml
