@@ -12,10 +12,13 @@ import rclpy
 from dog2_interfaces.msg import ContactPhase, GaitCommand
 from nav_msgs.msg import Odometry
 from rclpy.node import Node
+from ros_gz_interfaces.msg import Contacts
 from sensor_msgs.msg import JointState
 from std_msgs.msg import Float64MultiArray
 
 LEG_NAMES = ["lf", "lh", "rh", "rf"]
+SWING_LIFT_END = 0.30
+SWING_LOWER_START = 0.70
 # Walking footholds (base_link frame) at the stage-1 stand height
 # (0.205 m, rails locked at 0). Two truths bound these values:
 #
@@ -65,8 +68,8 @@ def swing_bezier(
     """Lift vertically, transfer while clear, then lower vertically."""
     safe_time = max(1e-3, swing_time)
     s = clamp01(phase)
-    lift_end = 0.30
-    lower_start = 0.70
+    lift_end = SWING_LIFT_END
+    lower_start = SWING_LOWER_START
     apex_z = max(float(p0[2]), float(pf[2])) + height
     pos = p0.copy()
     vel = np.zeros(3, dtype=float)
@@ -130,12 +133,82 @@ def touchdown_height(liftoff_height: float, overshoot: float) -> float:
     return float(liftoff_height) - max(0.0, float(overshoot))
 
 
+def contact_event_is_active(
+    now_sec: float,
+    active: bool,
+    stamp_sec: float,
+    freshness_sec: float,
+) -> bool:
+    """Treat Gazebo's silent contact stream as released after its event timeout."""
+    return bool(active) and (
+        float(now_sec) - float(stamp_sec) <= max(0.0, float(freshness_sec))
+    )
+
+
+def world_height(
+    base_world_z: float,
+    world_z_from_body: np.ndarray,
+    point_body: np.ndarray,
+) -> float:
+    """Return a body-frame point's height in the world frame."""
+    return float(base_world_z) + float(
+        np.dot(
+            np.asarray(world_z_from_body, dtype=float).reshape(3),
+            np.asarray(point_body, dtype=float).reshape(3),
+        )
+    )
+
+
+def body_z_for_world_height(
+    target_world_z: float,
+    base_world_z: float,
+    world_z_from_body: np.ndarray,
+    point_body_xy: np.ndarray,
+    fallback_body_z: float,
+) -> float:
+    """Solve body-frame z for a fixed world-frame touchdown height."""
+    row = np.asarray(world_z_from_body, dtype=float).reshape(3)
+    xy = np.asarray(point_body_xy, dtype=float).reshape(2)
+    if not np.all(np.isfinite(row)) or abs(float(row[2])) < 0.2:
+        return float(fallback_body_z)
+    return float(
+        (
+            float(target_world_z)
+            - float(base_world_z)
+            - float(row[0] * xy[0] + row[1] * xy[1])
+        )
+        / row[2]
+    )
+
+
+def contact_synchronized_swing_phase(
+    now_sec: float,
+    start_time: float,
+    swing_time: float,
+    release_time: Optional[float],
+) -> float:
+    """Hold the lift segment until measured release, then run a full transfer."""
+    safe_time = max(1e-3, float(swing_time))
+    nominal_phase = clamp01((float(now_sec) - float(start_time)) / safe_time)
+    if release_time is None:
+        return min(SWING_LIFT_END, nominal_phase)
+
+    release_phase = min(
+        SWING_LIFT_END,
+        clamp01((float(release_time) - float(start_time)) / safe_time),
+    )
+    post_release = clamp01((float(now_sec) - float(release_time)) / safe_time)
+    return release_phase + (1.0 - release_phase) * post_release
+
+
 @dataclass
 class LegSwingState:
     in_swing: bool = False
     start_time: float = 0.0
     p0: np.ndarray = None
     pf: np.ndarray = None
+    release_time: Optional[float] = None
+    touchdown_world_z: Optional[float] = None
 
 
 class SwingTargetNode(Node):
@@ -155,14 +228,20 @@ class SwingTargetNode(Node):
         # transients (tip/careen recoveries reach ~1 m/s) otherwise send
         # footholds 20+ cm out, beyond the leg workspace.
         self.declare_parameter("foothold_offset_max", 0.06)
-        # Ground-search overshoot below the measured liftoff ground height.
-        # A fixed nominal z drove short legs several centimetres beyond their
-        # reachable workspace when the trunk rode below its nominal height.
+        # World-frame ground-search overshoot below the measured liftoff
+        # height. A fixed body-frame nominal drove short legs several
+        # centimetres beyond their workspace when trunk height changed.
         self.declare_parameter("touchdown_overshoot", 0.02)
         self.declare_parameter("default_cmd_x", 0.0)
         self.declare_parameter("default_cmd_y", 0.0)
         self.declare_parameter("robot_description", "")
         self.declare_parameter("joint_state_topic", "/joint_states")
+        self.declare_parameter("contact_aware", True)
+        self.declare_parameter("contact_freshness_sec", 0.20)
+        for leg in LEG_NAMES:
+            self.declare_parameter(
+                f"foot_contact_topic_{leg}", f"/dog2/foot_contact/{leg}"
+            )
 
         self._swing_fraction = clamp01(float(self.get_parameter("swing_fraction").value))
         self._swing_height = float(self.get_parameter("swing_height").value)
@@ -176,9 +255,16 @@ class SwingTargetNode(Node):
         self._touchdown_overshoot = max(
             0.0, float(self.get_parameter("touchdown_overshoot").value)
         )
+        self._contact_aware = bool(self.get_parameter("contact_aware").value)
+        self._contact_freshness_sec = max(
+            0.01, float(self.get_parameter("contact_freshness_sec").value)
+        )
         self._cycle_time = 0.8
         self._body_velocity = np.zeros(2, dtype=float)
         self._body_yaw = 0.0
+        self._base_world_z = 0.0
+        self._world_z_from_body = np.array([0.0, 0.0, 1.0], dtype=float)
+        self._base_pose_valid = False
         self._cmd_velocity = np.array(
             [
                 float(self.get_parameter("default_cmd_x").value),
@@ -197,6 +283,8 @@ class SwingTargetNode(Node):
         self._mask = np.zeros(4, dtype=float)
         self._actual_foot_pos = NOMINAL_FOOTS.copy()
         self._actual_foot_valid = np.zeros(4, dtype=bool)
+        self._actual_contacts = [False] * 4
+        self._contact_stamp_sec = [float("-inf")] * 4
         self._pin_model = None
         self._pin_data = None
         self._pin_q = None
@@ -231,6 +319,14 @@ class SwingTargetNode(Node):
                 self._on_joint_state,
                 20,
             )
+        if self._contact_aware:
+            for leg_index, leg in enumerate(LEG_NAMES):
+                self.create_subscription(
+                    Contacts,
+                    str(self.get_parameter(f"foot_contact_topic_{leg}").value),
+                    lambda msg, index=leg_index: self._on_contact(index, msg),
+                    20,
+                )
         self._pub = self.create_publisher(
             Float64MultiArray,
             str(self.get_parameter("swing_target_topic").value),
@@ -300,6 +396,19 @@ class SwingTargetNode(Node):
         # body-frame direction that no longer matched the actual motion, and
         # the placement error grew with the very yaw drift it should damp.
         q = msg.pose.pose.orientation
+        quaternion = np.array([q.x, q.y, q.z, q.w], dtype=float)
+        norm = float(np.linalg.norm(quaternion))
+        if np.isfinite(norm) and norm > 1e-9:
+            x, y, z, w = quaternion / norm
+            self._base_world_z = float(msg.pose.pose.position.z)
+            self._world_z_from_body[:] = [
+                2.0 * (x * z - w * y),
+                2.0 * (y * z + w * x),
+                1.0 - 2.0 * (x * x + y * y),
+            ]
+            self._base_pose_valid = np.isfinite(self._base_world_z) and bool(
+                np.all(np.isfinite(self._world_z_from_body))
+            )
         siny_cosp = 2.0 * (q.w * q.z + q.x * q.y)
         cosy_cosp = 1.0 - 2.0 * (q.y * q.y + q.z * q.z)
         self._body_yaw = float(np.arctan2(siny_cosp, cosy_cosp))
@@ -313,6 +422,14 @@ class SwingTargetNode(Node):
         # ~0.3 s low-pass: strip the trot rock (base-frame velocity swings
         # +-0.12 m/s at gait frequency) before it feeds the Raibert term.
         self._body_velocity += 0.15 * (v_body - self._body_velocity)
+
+    def _on_contact(self, leg: int, msg: Contacts) -> None:
+        now = self._now_sec()
+        self._actual_contacts[leg] = bool(msg.contacts)
+        self._contact_stamp_sec[leg] = now
+        state = self._states[leg]
+        if state.in_swing and not msg.contacts and state.release_time is None:
+            state.release_time = now
 
     def _on_gait_command(self, msg: GaitCommand) -> None:
         self._gait = msg.gait or self._gait
@@ -359,19 +476,39 @@ class SwingTargetNode(Node):
             state = self._states[leg]
             if swing and not state.in_swing:
                 state.start_time = now
+                state.release_time = None if self._contact_aware else now
                 state.p0 = (
                     self._actual_foot_pos[leg].copy()
                     if self._actual_foot_valid[leg]
                     else self._target_pos[leg].copy()
                 )
                 state.pf = self._foothold(leg)
-                state.pf[2] = touchdown_height(
-                    state.p0[2], self._touchdown_overshoot
-                )
+                if self._base_pose_valid:
+                    state.touchdown_world_z = world_height(
+                        self._base_world_z,
+                        self._world_z_from_body,
+                        state.p0,
+                    ) - self._touchdown_overshoot
+                    state.pf[2] = body_z_for_world_height(
+                        state.touchdown_world_z,
+                        self._base_world_z,
+                        self._world_z_from_body,
+                        state.pf[:2],
+                        touchdown_height(
+                            state.p0[2], self._touchdown_overshoot
+                        ),
+                    )
+                else:
+                    state.touchdown_world_z = None
+                    state.pf[2] = touchdown_height(
+                        state.p0[2], self._touchdown_overshoot
+                    )
                 self._target_pos[leg] = state.p0.copy()
             if not swing:
                 self._target_pos[leg] = NOMINAL_FOOTS[leg]
                 self._target_vel[leg].fill(0.0)
+                state.release_time = None
+                state.touchdown_world_z = None
             state.in_swing = swing
             self._mask[leg] = 1.0 if swing else 0.0
 
@@ -381,10 +518,39 @@ class SwingTargetNode(Node):
         for leg, state in enumerate(self._states):
             if not state.in_swing:
                 continue
-            phase = clamp01((now - state.start_time) / swing_time)
+            if (
+                state.release_time is None
+                and not contact_event_is_active(
+                    now,
+                    self._actual_contacts[leg],
+                    self._contact_stamp_sec[leg],
+                    self._contact_freshness_sec,
+                )
+            ):
+                # Gazebo publishes contact events continuously while touching,
+                # then goes silent after liftoff instead of sending an empty
+                # Contacts message. Match the scheduler's freshness semantics
+                # so both nodes recognize physical release at the same time.
+                state.release_time = now
+            touchdown = state.pf
+            if state.touchdown_world_z is not None and self._base_pose_valid:
+                touchdown = state.pf.copy()
+                touchdown[2] = body_z_for_world_height(
+                    state.touchdown_world_z,
+                    self._base_world_z,
+                    self._world_z_from_body,
+                    touchdown[:2],
+                    state.pf[2],
+                )
+            phase = contact_synchronized_swing_phase(
+                now,
+                state.start_time,
+                swing_time,
+                state.release_time,
+            )
             pos, vel = swing_bezier(
                 state.p0,
-                state.pf,
+                touchdown,
                 phase,
                 swing_time,
                 self._swing_height,

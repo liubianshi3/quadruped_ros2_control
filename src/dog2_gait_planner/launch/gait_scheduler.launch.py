@@ -66,9 +66,13 @@ def generate_launch_description() -> LaunchDescription:
                         # bezier swing timing assumes the swing window is
                         # this fraction of the cycle.
                         "swing_fraction": 0.25,
-                        # The crawl lifts vertically before translating, so
-                        # 5 cm clears the foot without dragging it sideways.
-                        "swing_height": 0.05,
+                        # Keep the flat-ground lift inside the measured RH
+                        # workspace. A 5 cm apex is unreachable from the
+                        # fourth-step liftoff pose and folds the femur toward
+                        # its upper limit instead of lowering to touchdown.
+                        # 2.5 cm remains clear of flat ground and keeps the
+                        # complete lift-transfer-lower path reachable.
+                        "swing_height": 0.025,
                         # 5 mm ground-search only. 2 cm pressed the "swing"
                         # foot into the ground with the full task PD holding
                         # it at a BODY-frame target: a stiff rubber band
