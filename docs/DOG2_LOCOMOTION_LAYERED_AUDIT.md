@@ -561,8 +561,8 @@ flowchart TD
 | 7 | OPEN | P0 | CROSS | CODE | 5/6/7 | crossing stage 没有转换为可执行 swing/joint 目标，腿穿越动作不可达 |
 | 8 | **CLOSED** | 原 P1 | FLAT+LAV | CODE+TEST+RUN | 4/6/8 | global/local 限幅已按最终 shifted target 解耦；单跑 global y 无棘轮漂移且未越走廊 |
 | 9 | **CLOSED** | 原 P1 | FLAT | CODE+TEST+RUN | 4/6 | body-shift 目标/锚定契约闭合：质心饱和目标 + x 机身/y 路线硬帽按轴锚定；六跑证据链，最优跑 13 swing 无安全失败 |
-| 9b | OPEN | P1 | FLAT+LAV | RUN | 6/8 | 当前最早门：cadence。07-12 首个归因单跑量化：走行 31 s 中 SHIFT（全支撑清零）占 ~19 s/61%（均值 1.6 s、最长 3.42 s，名义 0.45），SWING 占 ~9.4 s/30%（均值 0.86 s，名义 0.45），SETTLE ~8%；有效推进 ~10 mm/s 仍 < 20 |
-| 9c | OPEN | P1 | FLAT | CODE+RUN | 6/7 | 姿态柔度过低（2–4 N·m 即 roll 0.13–0.27 rad），吃掉 15–19 N 静力裕量；最小位移目标被阻塞，margin 25 N 不得下调直至姿态刚度批次。07-12 单跑在 RH 预移中 0.5 s 内 roll 速率冲到 3.07 rad/s、tilt 0.80 → TILT_LIMIT（48.7 s），为该问题新增运行证据（单跑，未重复） |
+| 9b | OPEN | P1 | FLAT+LAV | RUN | 6/8 | 当前最早门：cadence。07-12 归因 1+3 跑收敛：SHIFT（全支撑清零+卸载等待）占走行预算 61–69.5%（均值 1.6–2.5 s、最长 8.0 s，名义 0.45），SWING 24–30%（均值 0.86–1.03 s，touchdown 确认普遍慢），SETTLE ~7–8%；推进 4–10 mm/s 仍 < 20 |
+| 9c | OPEN | P1 | FLAT | CODE+RUN | 6/7 | 姿态柔度过低（2–4 N·m 即 roll 0.13–0.27 rad），吃掉 15–19 N 静力裕量；最小位移目标被阻塞，margin 25 N 不得下调直至姿态刚度批次。07-12 首跑 RH 预移中 roll 速率 3.07 rad/s、tilt 0.80 → TILT_LIMIT（48.7 s）；随后三次隔离重复 0/3 复现，维持证据不升级 |
 | 10 | **CLOSED** | 原 P1 | FLAT | CODE+TEST+RUN | 5/8 | liveness 契约闭合：max_swing 强制 SETTLE（保留全接触门）、SHIFT/SETTLE 超时锁存安全 FAULT、状态窗口时长逐条记录；单跑 1 次 forced_settle 1.20 s 收敛且序列恢复 |
 | 11 | OPEN | P1 | ALL | CODE | 7 | stale effort 默认保持末值，NaN/Inf/fallback 契约不完整 |
 | 12 | OPEN | P1 | CROSS | CODE | 8 | crossing checker 不验证阶段顺序、动作时序、障碍接触与最终 COMPLETED |
@@ -621,14 +621,16 @@ flowchart TD
      （TILT_LIMIT）并删除。
    - 最优单跑 13 swing、横向 ≤59 mm、无安全失败；剩余 scheduler x/y 假契约与
      ready 语义清理降级为治理项。
-4. **cadence/推进与 touchdown liveness**：liveness 半批已闭合（2026-07-12）：
-   max_swing 强制 SETTLE、SHIFT/SETTLE 超时锁存安全 FAULT、状态窗口时长逐条
-   记录。首个归因单跑给出预算构成：SHIFT 61%（均值 1.6 s，其中卸载等待为主）、
-   SWING 30%（均值 0.86 s）、SETTLE 8%，推进 ~10 mm/s 仍 < 20 mm/s。下一半批
-   的候选（按证据排序）：缩短卸载等待（与 9c 姿态刚度耦合，需先修刚度或
-   降低 settle 等待构成）、全支撑段路径速度不再整段清零、swing 时长回归名义。
-   该跑以 TILT_LIMIT 结束（RH 预移中 roll 速率 3.07 rad/s，9c 证据），需三次
-   隔离重复区分随机性后再定单机制修复点。
+4. **cadence/推进与 touchdown liveness**：liveness 半批已闭合（2026-07-12，
+   1+3 跑证据）：max_swing 强制 SETTLE、SHIFT/SETTLE 超时锁存安全 FAULT、
+   状态窗口时长逐条记录；三连重复 3/3 STAGE_TIMEOUT、零安全/基础设施失败、
+   13 次 forced_settle 全部 1.20 s 收敛（此前失控到 9 s+），首跑 TILT_LIMIT
+   0/3 未复现。归因收敛：SHIFT 61–69.5%（均值 2.0–2.5 s，卸载等待为主）、
+   SWING 24–30%（touchdown 确认普遍慢于名义窗）、SETTLE ~7%。下一半批按
+   归因定序：① 拆 SHIFT 的"支撑目标 transit"与"动态 settle 门（速度
+   ≤0.025 与预移速度 0.10 m/s 交替矛盾）"；② touchdown 确认延迟（下落段
+   速度/接触事件链）；③ 复核全支撑段路径速度整段清零的必要性。均不与
+   姿态刚度（9c）混调，不动 15 N 门。
 5. **姿态刚度批次（阻塞"最小位移目标"重启）**：量化并提升侧倾有效刚度
    （现 ~20 N·m/rad 量级，2–4 N·m 即 roll 0.13–0.27 rad），使 base 推移接近
    COM 推移后，才回退 `support_target_force_margin` 至最小位移目标。
@@ -725,4 +727,7 @@ flowchart TD
 - liveness 契约 + cadence 归因首跑（domain 218，11 swing，SHIFT 61%/SWING 30%/
   SETTLE 8%，1 次 forced_settle 收敛，终判 TILT_LIMIT 48.7 s）：
   `/tmp/dog2_flat_cadence_liveness_20260712/run_20260712T033857Z_a66d84ab/`
+- liveness 三连重复（domain 219–221，3/3 STAGE_TIMEOUT、零安全失败、
+  forced_settle 9/1/3 全收敛、TILT 0/3；SHIFT 62.5/66.5/69.5%）：
+  `/tmp/dog2_flat_liveness_repeat3_20260712/run_20260712T041050Z_5c0566c0/`
 - 历史链路（已漂移）：`docs/MODULE_RESEARCH_BASELINE.md`、`docs/DOG2_WBC_MPC_COMPLETE_LOG.md`
