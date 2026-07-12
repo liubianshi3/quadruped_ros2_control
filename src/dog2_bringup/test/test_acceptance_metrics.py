@@ -6,6 +6,7 @@ from dog2_bringup.acceptance_metrics import (
     FootMetricsAccumulator,
     ScalarStats,
     body_velocity_from_world,
+    foot_contact_startup_evidence_missing,
     level_from_quaternion,
     parse_robot_model_metadata,
     parse_joint_limits,
@@ -14,6 +15,30 @@ from dog2_bringup.acceptance_metrics import (
     route_coordinates,
     transform_point,
 )
+
+
+def test_contact_health_requires_per_foot_startup_evidence() -> None:
+    missing = foot_contact_startup_evidence_missing(
+        message_seen={"lf": False, "lh": True, "rh": True, "rf": True},
+        active_seen={"lf": False, "lh": False, "rh": True, "rf": True},
+    )
+
+    assert missing == [
+        "foot_contact_lf_no_messages",
+        "foot_contact_lh_never_active",
+    ]
+
+
+def test_contact_health_accepts_silence_after_startup_evidence() -> None:
+    # Message age is intentionally absent from this event-stream contract:
+    # after initial proof, silence means no contact rather than failed health.
+    assert (
+        foot_contact_startup_evidence_missing(
+            message_seen={leg: True for leg in ("lf", "lh", "rh", "rf")},
+            active_seen={leg: True for leg in ("lf", "lh", "rh", "rf")},
+        )
+        == []
+    )
 
 
 def test_scalar_stats_reports_population_values() -> None:

@@ -16,6 +16,27 @@ from typing import Dict, Iterable, Mapping, Optional, Sequence, Tuple
 LEG_ORDER = ("lf", "lh", "rh", "rf")
 
 
+def foot_contact_startup_evidence_missing(
+    message_seen: Mapping[str, bool],
+    active_seen: Mapping[str, bool],
+    legs: Sequence[str] = LEG_ORDER,
+) -> list[str]:
+    """Validate startup evidence for Gazebo's event-driven contact streams.
+
+    Gazebo is allowed to stop publishing when a foot has no active contact, so
+    message age is contact state rather than a stream-health heartbeat.  The
+    ROS publisher-presence check remains the node's continuous liveness guard.
+    """
+
+    missing = []
+    for leg in legs:
+        if not message_seen.get(leg, False):
+            missing.append(f"foot_contact_{leg}_no_messages")
+        elif not active_seen.get(leg, False):
+            missing.append(f"foot_contact_{leg}_never_active")
+    return missing
+
+
 @dataclass
 class ScalarStats:
     """Online population statistics with RMS."""

@@ -11,6 +11,11 @@
     <plugin filename="gz-sim-physics-system" name="gz::sim::systems::Physics"/>
     <plugin filename="gz-sim-user-commands-system" name="gz::sim::systems::UserCommands"/>
     <plugin filename="gz-sim-scene-broadcaster-system" name="gz::sim::systems::SceneBroadcaster"/>
+    <!-- Required by the foot contact sensors in obstacle trials. This
+         publishes contact observations only; it does not change dynamics. -->
+    <plugin
+      filename="gz-sim-contact-system"
+      name="gz::sim::systems::Contact"/>
 
     <light type="directional" name="sun">
       <cast_shadows>true</cast_shadows>

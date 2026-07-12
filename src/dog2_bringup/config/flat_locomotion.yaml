@@ -20,12 +20,29 @@ flat_mpc_node:
     max_angular_acceleration: 0.50
     max_position_error: 0.10
     max_yaw_error: 0.35
-    body_shift_kp: 0.0
+    # Eliminate the measured all-stance pre-shift steady-state error. Zero
+    # gain stopped 20-22 mm short and left RH at 1.38 N (15 N required);
+    # the node default of 800 N/m cleared that gate but caused 3.31 m of
+    # stance slip and 4.40 rad/s peak angular speed. 250 N/m adds 5-5.5 N
+    # at the observed residual, enough for the missing ~11 mm centroid shift
+    # without saturating the planar wrench during ordinary pre-shifts.
+    body_shift_kp: 250.0
     body_shift_kd: 80.0
     body_shift_max_linear_speed: 0.025
     body_shift_max_angular_speed: 0.15
-    body_shift_max_tilt: 0.18
+    # Block the unstable 0.16-0.17 rad releases seen with active feedforward,
+    # while admitting the repeatable ~0.149 rad three-foot-ready equilibrium.
+    body_shift_max_tilt: 0.15
     support_ready_min_normal_force: 15.0
+    # The pre-shift target is the nearest COM point whose three-foot static
+    # solve reaches gate + margin. 25 N intentionally saturates the target
+    # to the equal-load centroid (15 + 25 >= mg/3 ~= 39 N): measured
+    # attitude compliance (roll 0.13-0.22 rad under 2-4 N*m restoring
+    # moment) displaces the COM ~20 mm against the push, eating 15-19 N of
+    # static margin, so shallow minimal-shift targets stall just below the
+    # 15 N gate (DEVELOPMENT_LOG 2026-07-11). Reduce this margin only after
+    # attitude stiffness is retuned.
+    support_target_force_margin: 25.0
     support_center_gain: 1.0
     support_center_max_speed: 0.10
     support_center_max_forward_offset: 0.12

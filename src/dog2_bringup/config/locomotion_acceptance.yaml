@@ -27,6 +27,9 @@ dog2_locomotion_acceptance:
 
     poll_period_sec: 0.05
     freshness_timeout_sec: 1.0
+    # Gazebo contact topics are event streams: after this interval, silence
+    # means no active contact. Instrumentation health instead requires a live
+    # publisher plus per-foot startup message/contact evidence.
     contact_event_timeout_sec: 0.10
     wait_ready_timeout_sec: 60.0
     wait_settle_timeout_sec: 45.0
@@ -35,7 +38,6 @@ dog2_locomotion_acceptance:
     total_timeout_sec: 180.0
     wall_watchdog_timeout_sec: 300.0
     sim_stall_timeout_sec: 10.0
-    foot_contact_freshness_timeout_sec: 2.0
 
     # Fixed protocol. Distances are normalized by the current symmetric trunk
     # dimensions rather than copying Eurobench's ANYmal-sized 3 m ramp.

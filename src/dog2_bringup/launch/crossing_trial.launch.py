@@ -49,6 +49,7 @@ def generate_launch_description() -> LaunchDescription:
                 launch_arguments={
                     "controller_mode": "effort",
                     "research_stack": "true",
+                    "flat_locomotion": "false",
                     "use_gui": LaunchConfiguration("use_gui"),
                     "rviz": LaunchConfiguration("rviz"),
                     "teleop": LaunchConfiguration("teleop"),

@@ -39,6 +39,7 @@ from dog2_bringup.acceptance_metrics import (
     ScalarStats,
     atomic_write_json,
     body_velocity_from_world,
+    foot_contact_startup_evidence_missing,
     level_from_quaternion,
     parse_joint_limits,
     parse_robot_model_metadata,
@@ -109,7 +110,6 @@ class LocomotionAcceptanceNode(Node):
         "total_timeout_sec": 180.0,
         "wall_watchdog_timeout_sec": 300.0,
         "sim_stall_timeout_sec": 10.0,
-        "foot_contact_freshness_timeout_sec": 2.0,
         "body_length_m": 0.342,
         "body_width_m": 0.160,
         "robot_mass_kg": 12.0028,
@@ -1043,18 +1043,11 @@ class LocomotionAcceptanceNode(Node):
             self._urdf_request = None
             self.get_logger().warn(f"Could not read robot_description yet: {exc}")
 
-    def _contact_health_missing(self, *, require_recent: bool) -> list[str]:
-        missing = []
-        for leg in LEG_ORDER:
-            if not self._foot_contact_message_seen[leg]:
-                missing.append(f"foot_contact_{leg}_no_messages")
-            elif not self._foot_contact_seen[leg]:
-                missing.append(f"foot_contact_{leg}_never_active")
-            elif require_recent and self._age(f"foot_contact_{leg}") > self._float(
-                "foot_contact_freshness_timeout_sec"
-            ):
-                missing.append(f"foot_contact_{leg}_stale")
-        return missing
+    def _contact_health_missing(self) -> list[str]:
+        return foot_contact_startup_evidence_missing(
+            self._foot_contact_message_seen,
+            self._foot_contact_seen,
+        )
 
     def _required_streams_missing(
         self, *, require_contact_health: bool = False
@@ -1086,7 +1079,7 @@ class LocomotionAcceptanceNode(Node):
         if not expected_joints.issubset(self._joint_velocities):
             missing.append("joint_velocities_complete")
         if require_contact_health:
-            missing.extend(self._contact_health_missing(require_recent=True))
+            missing.extend(self._contact_health_missing())
         return missing
 
     def _publish_command(self, vx: float, wz: float) -> None:
@@ -1531,7 +1524,7 @@ class LocomotionAcceptanceNode(Node):
         if self._stage == "WAIT_SETTLE":
             self._publish_command(0.0, 0.0)
             missing = self._required_streams_missing()
-            contact_missing = self._contact_health_missing(require_recent=True)
+            contact_missing = self._contact_health_missing()
             if missing:
                 self._stable_since = None
             elif (
@@ -1772,7 +1765,7 @@ class LocomotionAcceptanceNode(Node):
             "contact_instrumentation": {
                 "status": (
                     "PASS"
-                    if not self._contact_health_missing(require_recent=False)
+                    if not self._contact_health_missing()
                     else "FAIL"
                 ),
                 "foot_contact_seen": dict(self._foot_contact_seen),
@@ -1947,7 +1940,10 @@ class LocomotionAcceptanceNode(Node):
                 "contact_phase": str(self._params["contact_phase_topic"]),
                 "effort_command": str(self._params["effort_command_topic"]),
                 "base_and_tibia_contact": "boolean event latch; wrench optional",
-                "foot_contact": "boolean contact presence with freshness timeout",
+                "foot_contact": (
+                    "event stream; silence means no contact; publisher and "
+                    "startup contact evidence required"
+                ),
                 "base_kinematics": "finite difference of stamped Gazebo pose",
                 "dynamic_pose_frames": self._dynamic_pose_frame_ids,
                 "last_tf_error": self._last_tf_error or None,
