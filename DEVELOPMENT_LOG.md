@@ -1,5 +1,435 @@
 # DEVELOPMENT_LOG
 
+## 2026-07-12 11:20 收口提交：07-11 全批次入库 + swing 接触同步批次补记
+
+### 说明
+
+- 将 07-11 的 P0 契约修复、reference 限幅、body-shift 锚定、swing 接触同步与
+  审计文档全部提交入库（此前全部停留在工作区）。提交按子系统拆分：
+  bringup / mpc / gait / docs，每个提交与其断言的测试同批。
+- 补记：`swing_target_node.py` 于 07-11 17:44 落地三项此前未单独记录的改动，
+  时间上先于 19:11 六跑证据链，六跑均在该代码状态下运行、结果已覆盖验证：
+  1. 接触同步摆动相位（`contact_synchronized_swing_phase`）：实测 release 前
+     把相位钳在抬升段（<=0.30），release 后完整走完 transfer/lower，消除
+     "时钟走完、脚未离地"导致的拖脚与相位撕裂；release 判定与 scheduler 相同的
+     0.20 s 事件静默语义（`contact_event_is_active`）。
+  2. 世界系落足高度：touchdown 目标固定为 liftoff 世界高度 - overshoot，
+     机身升降/倾斜时逐拍反解 base 系 z（`world_height`/
+     `body_z_for_world_height`），落足深度不再随机身姿态漂移。
+  3. `swing_height` 0.05→0.025（`gait_scheduler.launch.py`）：5 cm 顶点在
+     第四拍离地位形下不可达，会把 femur 推向上限；2.5 cm 保持全程可达且
+     离地净空足够。
+
+### 证据
+
+- 本日复验：`colcon build dog2_mpc` 重建 PASS；CTest
+  `test_mpc_urdf_model_data`+`test_flat_locomotion_mpc` 2/2 PASS；
+  pytest `test_swing_target.py` 11 PASS、`test_research_stack_files.py`
+  12 PASS、`test_acceptance_metrics.py` 11 PASS；`git diff --check` 干净；
+  无遗留 Gazebo/LAV 进程。
+- 运行证据引用 19:11 条目六跑链（domains 212–217，18:21–19:08 执行，
+  均含本批 swing 代码），最优跑 13 swing、横向 59.1 mm < 80 mm、
+  无安全/基础设施失败。
+
+### 续接点
+
+- 收口后进入 cadence/推进批次（台账 9b/10）：max_swing/SHIFT 到期确定
+  fault/safe 行为 + 全支撑清零与卸载等待的 cadence 归因；不与姿态刚度
+  （9c）混调。
+
+## 2026-07-11 19:11 body-shift 目标与锚定契约（六跑证据链）
+
+### 目标
+
+- 收敛 flat 预移的目标与所有权：在不动 `support_ready_min_normal_force=15 N`、
+  80 mm 走廊与任何 gain 的前提下，让三足 15 N 门在每次卸载前可达，且预移参考
+  不得把机身推出走廊或引发倾覆。
+
+### 改动
+
+- `flat_locomotion_mpc.hpp/.cpp` 新增两个纯函数：
+  - `nearestThreeFootSupportShift()`：解析求"三足静力全部达到
+    `gate+margin` 的最近 COM 点"（重心坐标收缩三角形投影），请求不可行时
+    饱和到等载质心；
+  - `composeAxisSplitPreShiftShift()`：按轴拆分锚定——x（路线方向）锚定实测
+    机身，路线滞后不再吞噬支撑包络；y（垂直路线）锚定 global route reference
+    并做世界系 `±support_center_max_lateral_offset(0.06 m)` 硬帽，参考不再追随
+    机身横向漂移。
+- `flat_mpc_node.cpp` 预移目标改为
+  `nearestThreeFootSupportShift(gate + support_target_force_margin)` 经按轴拆分
+  合成；新参数 `support_target_force_margin`（代码默认与 yaml 同为 25.0 N，
+  15+25 ≥ mg/3≈39.25 N 故当前恒饱和到质心深度）。曾实现并试跑
+  dt/tau 有界积分推进（tau=1 s），因对深目标持续堆积导致 x 参考失控
+  （详见证据）已整体删除，不留死代码。
+- `flat_locomotion.yaml` 落 `support_target_force_margin: 25.0` 并注释姿态柔度
+  依据；`test_research_stack_files.py` 钉住 15 N 门与 25 N margin；
+  `test_flat_locomotion_mpc.cpp` 新增 6 条纯函数回归（最近点/质心饱和/
+  按轴拆分锚定/横向硬帽/非有限输入）。
+
+### 证据
+
+- 回归：`colcon build dog2_mpc` PASS；CTest
+  `test_mpc_urdf_model_data`+`test_flat_locomotion_mpc` 2/2 PASS；
+  `test_research_stack_files.py` 12 PASS；`git diff --check` 干净。
+- 六次隔离单跑（domain 212–217，独立 partition，跑前后确认无遗留进程）：
+  1. 最近点+3 N（混合限幅）
+     `/tmp/dog2_flat_support_target_20260711/run_20260711T102150Z_d585c693/`：
+     STAGE_TIMEOUT；卸载等待静力 min 恒在 `14.6–14.98 N` 门下悬停，
+     adaptive 被路线滞后顶到 `[0.12,0.06]` 包络上限——混合量限幅使 18 N 目标
+     不可达。
+  2. 双轴机身再锚定
+     `/tmp/dog2_flat_shift_ownership_20260711/run_20260711T103405Z_8a57a4dd/`：
+     STAGE_TIMEOUT；第一轮 LH 卸载静止死锁约 50 s，min 恒 `-0.7 N`、
+     roll 恒 0.134 rad——侧向推力致 tilt，`0.2 m×0.134≈23 mm` COM 反向位移
+     恰好吃掉剩余目标距离，receding 目标随机身停摆而冻结（比例控制稳态短差）。
+  3. 有界积分 tau=1 s
+     `/tmp/dog2_flat_shift_integral_20260711/run_20260711T104626Z_01846d1a/`：
+     ROUTE_CORRIDOR（OUTBOUND 5 s）；y 机身再锚定使参考追随横向漂移
+     （ref y 达 0.078 m），tilt 0.224 rad。
+  4. 积分+质心深度（margin 25）
+     `/tmp/dog2_flat_centroid_depth_20260711/run_20260711T105212Z_132793a5/`：
+     ROUTE_CORRIDOR（11 s）；镜像方向复现同一 y 漂移螺旋（ref y −0.113、
+     tilt 0.265 rad），证明螺旋与目标深度无关、由 y 锚定产生。
+  5. 积分+质心+按轴拆分
+     `/tmp/dog2_flat_axis_split_20260711/run_20260711T110153Z_c79b7765/`：
+     TILT_LIMIT（6.5 s）；积分对深目标每秒叠加整份质心位移，x 参考超前机身
+     7 cm（adaptive x −0.182）、推力 −30.8 N、tilt 0.558 rad 翻倒——
+     积分方案被否决并从代码删除。
+  6. 比例+质心+按轴拆分（最终形态）
+     `/tmp/dog2_flat_axis_split_prop_20260711/run_20260711T110827Z_a965d794/`：
+     STAGE_TIMEOUT，但为迄今最优：LF 摆 4 次、RF/LH/RH 各 3 次（≈3.25 轮，
+     此前最好 2 轮），路线投影 max `0.309 m`（此前 0.222），横向 max
+     `59.1 mm < 80 mm`，无走廊/tilt/base-contact/基础设施失败；全部卸载等待
+     数秒内越过 15 N 门。失败仅剩节奏：51.3 s 预算走完 30% 路程
+     （均值 ~6 mm/s，需 ~20 mm/s），期间 29 条 late-touchdown 告警。
+- 姿态柔度定量：三跑合并测得 roll `0.13–0.27 rad` 对应指令回复力矩仅
+  `2–4.4 N·m`（有效侧倾刚度 ~20 N·m/rad 量级），等效吃掉 `15–19 N` 静力
+  裕量——这是"最小位移目标"当前不可执行的根因，姿态刚度重调前
+  `support_target_force_margin` 不得下调。
+
+### 续接点
+
+- 本批锚定契约已闭合：x 机身锚定（可达性）、y 路线锚定+硬帽（走廊安全）、
+  比例接近 + 质心深度目标（tilt 损耗掩护）。scheduler `body_shift` x/y 假契约
+  与 `body_shift_error` 语义清理仍开放（纯治理，不阻塞运行）。
+- 新的 flat 最早阻断是节奏/推进：全支撑段路径速度清零 + 卸载等待秒级 +
+  late touchdown 拖长摆动，均值 6 mm/s 不足验收所需。下一批按审计路线做
+  `max_swing`/SHIFT 活性契约与 cadence 归因，不与本批混调。
+- 子代理基础设施本轮持续认证错误（含最小探测），代码由主代理完成并报告；
+  恢复后继续按"委派实现、主代理把关"的分工。
+
+## 2026-07-11 14:15 global/local reference 限幅契约闭合 + 单跑
+
+### 目标
+
+- 只修 flat MPC 的 global integrated route 与 local adaptive body shift 限幅契约：
+  合法 `body = global + adaptive` 时不得回写 global，真实 shifted-target 跟踪误差仍受
+  `max_position_error=0.10 m` 约束；不同时修改 centroid、15 N 安全门、gain、落足或
+  LAV 阈值。
+
+### 改动
+
+- 在 `flat_locomotion_mpc.hpp/.cpp` 新增纯函数
+  `boundIntegratedPositionReference()`，以
+  `(integrated_reference + adaptive_shift) - measured_position` 为实际目标误差；仅在
+  该误差超限时反解新的 integrated reference。
+- `flat_mpc_node.cpp` 将 anti-windup 移到 adaptive shift 更新之后，再合成最终
+  `body_reference`；原先只比较 `global - body` 并回写 global 的二维限幅已删除。
+- 增加三条回归：
+  1. `body = global + adaptive` 时 global 不变；
+  2. shifted target 的超限误差仍被压到 `0.10 m` 且方向不变；
+  3. adaptive 为零时保留旧限幅行为。
+- MPC 节流日志拆出 `global=[x y]` 与 `adaptive=[x y]`，使后续运行可直接区分路径参考、
+  局部支撑偏置和最终 body reference。
+- 同步更新 `docs/DOG2_LOCOMOTION_LAYERED_AUDIT.md` 的平地首门、问题台账、根因树、
+  修复路线和复现索引。
+
+### 证据
+
+- `colcon build --packages-select dog2_mpc --symlink-install`：PASS。
+- 正确 source `/opt/ros/humble` 与本工作区后，聚焦 CTest
+  `test_mpc_urdf_model_data`、`test_flat_locomotion_mpc`：`2/2 PASS`。
+  包级 `colcon test` 中这两个注册 C++ 测试同样通过；包级总结果仍被既有
+  `ament_flake8`/`ament_uncrustify` 存量格式问题标红，本批未做无关全包格式化。
+- 单 trial：
+  `/tmp/dog2_flat_reference_clamp_fix_20260711/run_20260711T061137Z_b909cda2/`
+  （ROS domain 211，独立 Gazebo partition）完成 LF/LH/RH/RF 各两次 swing；最终
+  `FAIL_LOCOMOTION: STAGE_TIMEOUT`，未触发 `ROUTE_CORRIDOR`、`BASE_CONTACT` 或 tilt。
+- 运行日志中 global y 范围约 `[-9,0] mm`，adaptive y 为 `[-50,+60] mm`，最终
+  `ref-body` 最大约 `49 mm`；报告/样本最大横向偏移约 `62.3 mm < 80 mm`，证明合法
+  local shift 已不再把 global route 棘轮推到走廊边缘。最大路线投影约 `0.222 m`；
+  这是一条机制验证单跑，不等于 full LAV PASS。
+- 新暴露的运行首门：两轮后准备第三次 LF 时 adaptive x 达 `+0.12 m` 上限，三足静力
+  预测仍约为 `[82.1,-122.9,158.6] N`，support-ready 持续不成立，随后 stage timeout。
+  15 N 门未降低。
+- `git diff --check` 对四个 MPC 改动文件为 PASS；结束后无遗留 Gazebo/LAV 进程。
+
+### 续接点
+
+- 下一最小批次应只收敛 body-shift 所有权与目标：使用当拍实测足几何求满足三足每足
+  `>=15 N` 的最近安全点，并解释 route reference、local shift 包络与 scheduler x/y
+  请求各自的所有权；不在同批调整 gain、摩擦、落足或验收阈值。
+- `max_swing` 到期后的确定 fault/safe 行为及同时间基准世界足位姿记录仍作为后续独立
+  批次，不与 support-target 修复混改。
+
+## 2026-07-11 14:00 flat 横漂 / 低推进 / stance-slip 归因
+
+### 目标
+
+- 在不降低 `support_ready_min_normal_force=15 N`、不放宽 LAV `80 mm` 走廊且不修改
+  控制代码的前提下，使用 P0 contact 修复后的有效样本定位 flat crawl 横漂、低有效推进
+  和高 `stance_slip` 的最早共同来源，并给出下一批单机制修复点。
+
+### 改动
+
+- 只更新 `docs/DOG2_LOCOMOTION_LAYERED_AUDIT.md` 与本日志；未修改控制代码、URDF/xacro/
+  mesh、yaml、launch 或测试。
+- 把 flat 首因从笼统的“方向/落足/滑移”收敛为：
+  `flat_mpc_node.cpp:455-462` 的 `max_position_error` 用
+  `integrated_position_reference - body_position` 做二维限幅并回写全局参考，却没有从
+  误差中剔除合法的 `adaptive_body_shift_world_`。因此局部支撑预移会被当成路径跟踪
+  落后，重新污染 global route reference。
+- 将 full support-centroid 过移、scheduler x/y 未消费、touchdown 无确定超时状态以及
+  LAV stance-slip 可观测性不足拆成后续独立问题，避免一次混调 gain/摩擦/阈值。
+
+### 证据
+
+- P0 重复批次两个有效样本：
+  `/tmp/dog2_p0_contact_contract_repeat3_20260711/run_20260711T051903Z_b1cd1e94/`
+  的 trial 001/003 有效推进均约 `0.0044 m/s`，仅为 `0.05 m/s` 命令的 `8.9%`；
+  四足支撑段占 OUTBOUND 的 `68.6%/52.9%`，并分别产生约
+  `-0.128/-0.112 m` 路线投影，抵消摆腿段的正向推进。
+- 依据当前源码，以 20 Hz LAV pose/contact-phase 样本重放 integrated-reference
+  积分与 0.10 m 限幅：
+  - trial 001：未限幅 delta 约 `(-0.437,+0.009)m`，限幅后
+    `(-0.218,-0.031)m`，累计注入约 `-40 mm` 世界系 y；
+  - trial 003：未限幅 delta 约 `(-0.805,+0.005)m`，限幅后
+    `(-0.254,+0.061)m`，累计注入约 `+56 mm` 世界系 y。
+  两次改写方向与各自相反方向的 `ROUTE_CORRIDOR` 越界一致；限幅同时丢弃约
+  `0.219/0.550 m` 的 x 积分，是低推进的直接组成。
+- 新增一次最小隔离复现：domain 231 首次为独立整栈
+  `READINESS_TIMEOUT`；清理确认后 domain 232 有效启动，报告
+  `/tmp/dog2_flat_attribution_20260711_retry/run_20260711T055655Z_c4061d36/trial_001.json`
+  最终为 `BASE_CONTACT`。该次 MPC 日志的 body reference y 范围约
+  `[-0.072,+0.059]m`，而 adaptive y 上限为 `±0.06 m`、命令/航向积分 y 仅约
+  `0.4 mm`；reference 本身已被回写到走廊边缘。机身 y 跟踪误差均值约 `17 mm`、
+  峰值 `40 mm`，说明不能先通过放宽走廊掩盖 reference 规划错误。
+- 用 `testMeasuredStartupSupport` 的实测足位姿和 `12.0028 kg` 质量离线解三足静力：
+  LF/RF 零 shift 时最小法向力已为 `30.0/17.2 N`；LH/RH 满足 15 N 的最近 shift
+  范数约 `48/67 mm`，full centroid 则为 `101/110 mm` 并把三足推到约
+  `39.25 N` 等载。15 N 安全门无需降低，目标也无需总追 centroid。
+- touchdown 是独立放大器：旧 trial 003 的末次 LF SWING 至少 `9.16 s`；domain 232
+  的 RH 超过 `crawl_max_swing_sec=1.20 s` 后 scheduler 只以 50 Hz 打 ERROR、仍保持
+  SWING，约 `1.94 s` 后接触且几乎同时发生 `BASE_CONTACT`。
+- 三次报告的足位姿源均为 `gazebo_odom+joint_state_pinocchio`；`stance_slip` 是接触
+  期间逐样本无符号位移路径和，CSV 又不保存足位姿。因此当前 `0.62–0.75` 的
+  slip/base-path 比值不能区分真实滑移与 odom/joint 非同步重建抖动，本轮未据此调整
+  摩擦或 WBC。
+- 文档校验：`git diff --check -- DEVELOPMENT_LOG.md` 为 PASS；审计文件当前为未跟踪
+  文档，专门检查行尾空白无命中。隔离运行结束后确认无遗留 Gazebo/LAV 进程。
+
+### 续接点
+
+- 下一最小代码批次只修 global/local reference 限幅契约：合法
+  `body = global + adaptive` 时不得改写 global reference，真实跟踪落后仍必须受
+  `max_position_error=0.10 m` 约束；先加回归，再做单 trial。
+- 该批通过后才处理“实测三足几何的最近 15 N 安全点”与 body-shift 所有权；不同时改
+  centroid、gain、落足或验收阈值。
+- `max_swing` 确定 fault/safe 行为及同时间基准世界足位姿记录作为后续独立批次。
+
+## 2026-07-11 13:46 九层全量只读复核 + 审计台账重排
+
+### 目标
+
+- 在三个 P0 闭合后，以 `docs/DOG2_LOCOMOTION_LAYERED_AUDIT.md` 为索引重新遍历
+  当前工作树的九层源码、launch、world、配置、测试和现有运行报告，消除文档漂移，
+  找出 flat/crossing 各自真实最早阻断点并重排后续依赖。
+
+### 改动
+
+- 只更新审计文档，不修改控制代码、URDF/xacro/mesh、配置、launch 或测试。
+- 将原 P0 #1/#2/#3 在正文、根因树和台账中统一标为 CLOSED，并补入现有
+  CODE+TEST+RUN 证据；更正 complete MPC runtime mass 实际由 URDF 覆盖、
+  complete WBC 已订阅通用 swing target、现役 rail 为 12R effort + 4P position 等
+  首轮/历史文档漂移。
+- 平地主线的当前首门更新为 `ROUTE_CORRIDOR`，并把低路线投影、高 stance slip、
+  scheduler body-shift x/y 未被 flat MPC 消费列为优先归因链；保持
+  `support_ready_min_normal_force=15 N` 和 80 mm 走廊，不建议用降门/放宽阈值掩盖。
+- crossing 根因按真实依赖拆成：当前 RUN 的 HOVER trigger readiness →
+  PRE_APPROACH 内部 reference 与外部零 cmd gait 分裂 → rail 无 position command
+  出口 → crossing stage 无专用腿动作目标。将 inactive/备用路径的统一 0.08 rail
+  placeholder 降为后序问题。
+- 补登记 crossing checker 假阳性窗口、MPC/dynamics 测试未注册、test rail 限位
+  rh/rf 与 URDF 不符、stale effort/finite fallback、LAV batch 统计/hash 等治理缺口；
+  §13 改为 flat、crossing 和安全治理三条显式依赖路线。
+
+### 证据
+
+- 复核关键源码包括 `flat_mpc_node.cpp:437-550`、
+  `mpc_node_complete.cpp:742-757`、`crossing_trigger.py:286-291`、
+  `control_stack.launch.py:342-345`、`wbc_node_complete.cpp:398-587`、
+  `crossing_check.py:388-435`、`dog2_mpc/CMakeLists.txt:276-539` 和
+  `test_helpers.hpp:316-342`。
+- `git diff --check -- docs/DOG2_LOCOMOTION_LAYERED_AUDIT.md`：PASS。
+- 本批未运行长仿真；运行结论只引用 13:23/13:25/13:28 已记录证据，没有把静态
+  CODE/INFER 结论冒充 E2E PASS。
+
+### 续接点
+
+- 若继续 flat：先增加/提取每拍世界足迹、adaptive/requested shift 与 stance slip
+  归因证据，再决定 body-shift 契约修法；不先放宽走廊。
+- 若继续 crossing：先单独诊断 HOVER readiness；随后必须先确认 rail
+  position/effort 架构与唯一 owner，才能修改 crossing 执行代码。
+
+## 2026-07-11 13:28 P0#3 越障 world 接触系统补齐
+
+### 目标
+
+- 让 `window_frame.sdf` / `step_block.sdf` 与平地 world 一样具备 Gazebo
+  contact sensor 的 world-level 系统支持，闭合越障场景足端接触观测链。
+
+### 改动
+
+- 两个 obstacle world 均增加
+  `gz-sim-contact-system` / `gz::sim::systems::Contact` 插件；该插件只发布
+  contact 观测，不修改碰撞几何、摩擦或动力学参数。
+- `test_research_stack_files.py` 使用 XML 解析检查两个插件的 filename/name
+  组合，既防缺失也同时验证 SDF 仍可解析。
+
+### 证据
+
+- `colcon build --packages-select dog2_bringup --symlink-install`：PASS。
+- `test_research_stack_files.py`：`11 passed`。
+- 隔离运行 `window_crossing_test.launch.py`（domain 206，独立 GZ/IGN partition）
+  时，四个 ROS 足端接触 topic 均收到实测消息：
+  `/dog2/foot_contact/{lf,lh,rh,rf}` 观测速率约 `929–1009 Hz`。这直接证明
+  window world 的 sensor → Contact system → Gazebo transport → ROS bridge 链已通。
+- 本次 crossing 运行最终仍为 `FAIL: waiting for crossing trigger; stage=HOVER`；
+  trigger 的高度/稳定 readiness 未满足，未把该结果误写为 crossing PASS，也不归因于
+  contact 插件。运行结束后确认无遗留仿真/控制进程。
+
+### 续接点
+
+- 三个 P0 已逐批完成：LAV contact 事件流契约、crossing 完整栈选择、obstacle
+  world Contact system 均有代码断言和运行证据。
+- 按本次任务约束在此停下，等待用户决定是先调查 crossing trigger readiness，
+  还是按审计台账进入 P1。
+
+## 2026-07-11 13:25 P0#2 crossing 入口显式选择完整 research 栈
+
+### 目标
+
+- 修复 `crossing_trial.launch.py` 继承 `system.launch.py` 的
+  `flat_locomotion=true` 默认值、实际误启平地 MPC/WBC 的入口断链。
+
+### 改动
+
+- crossing 入口向 `system.launch.py` 显式传入
+  `flat_locomotion: "false"`；`controller_mode=effort` 和
+  `research_stack=true` 保持不变。
+- `test_research_stack_files.py` 增加回归断言，同时钉住
+  `research_stack=true` 与 `flat_locomotion=false`，防止 crossing 再次落回平地栈。
+
+### 证据
+
+- `colcon build --packages-select dog2_bringup --symlink-install`：PASS。
+- `test_research_stack_files.py`：`10 passed`。
+- 隔离 topology 运行（domain 205，独立 GZ/IGN partition）确认节点图包含
+  `/mpc_node_complete`、`/wbc_node_complete`，不包含 `flat_mpc_node` /
+  `flat_wbc_node`；`mpc_node_complete` 日志显示完整 16D MPC 已初始化并开始求解。
+- topology 运行由 40 s 外部 timeout 主动结束（exit 124，仅用于观测节点选择），
+  结束后确认无遗留 `ign gazebo`、`gz sim`、MPC/WBC 或 launch 进程。
+
+### 续接点
+
+- P0#2 已闭合 crossing 入口到完整状态机栈的选择契约；尚未宣称 crossing E2E
+  通过。
+- 等待确认后进入 P0#3：为 `window_frame.sdf` / `step_block.sdf` 补
+  `gz-sim-contact-system`，并增加 world 资产断言。
+
+## 2026-07-11 13:23 P0#1 接触新鲜度契约统一（已复验）
+
+### 目标
+
+- 修复 LAV 把 Gazebo 足端 contact 事件流的合法静默误判为
+  `foot_contact_*_stale` / `STALE_GROUND_TRUTH`，同时保留真实传感器缺失和
+  无消息的基础设施门。
+
+### 改动
+
+- 选择**验收器侧事件流契约**，不在 world/bridge 侧合成空 contact 心跳：
+  Gazebo 静默继续表示“当前无接触”，与 gait scheduler / swing target 既有语义一致。
+  world 侧持续发布会扩大到所有 contact 消费者并改变已验证的 release 语义。
+- `locomotion_acceptance.py` 不再把足端消息年龄当 heartbeat；运行期仍逐周期检查
+  contact topic publisher，开始计分前仍要求每足至少收到过消息且观察到过有效触地。
+  odom、joint、contact phase、effort、仿真时钟等真值 freshness 门及全部运动安全门
+  保持不变。
+- 删除代码默认值和 `locomotion_acceptance.yaml` 中已经不成立的
+  `foot_contact_freshness_timeout_sec`，报告数据源改为显式记录事件流契约。
+- 新增纯函数回归，覆盖 `no_messages`、`never_active` 和“已有启动证据后静默合法”；
+  `test_research_stack_files.py` 增加配置/代码默认同步断言，防止重新引入 contact
+  heartbeat timeout。
+
+### 证据
+
+- `colcon build --packages-select dog2_bringup --symlink-install`：PASS。
+- `test_acceptance_metrics.py + test_research_stack_files.py`：`20 passed`。
+- 隔离单跑（domain 201）：没有 `STALE_GROUND_TRUTH`，contact instrumentation
+  为 PASS；运行推进到 LH（第三拍）之后，最终因真实横向偏差
+  `80.366 mm > 80 mm` 输出 `ROUTE_CORRIDOR`。四腿 swing count 为
+  `LF=3, RF=2, LH=2, RH=2`。
+- 3 次隔离重复（domain 202–204）失败码为 `ROUTE_CORRIDOR ×2`、
+  `READINESS_TIMEOUT ×1`，`STALE_GROUND_TRUTH ×0`。两次成功启动的 trial 均推进到
+  LH 第三拍及以后；另一次在仿真时钟/odom/joint 全部未建立时超时，属于独立的
+  整栈启动失败，不是足端静默误判。
+- `support_ready_min_normal_force=15.0 N` 未改；URDF、腿序和 gait/swing 的
+  `0.20 s` release 语义均未改。
+
+### 续接点
+
+- P0#1 的错误基础设施判定已消除；当前有效 trial 暴露的下一运动失败仍是横向
+  `ROUTE_CORRIDOR`，但按 P0 顺序暂不处理。
+- 等待确认后再进入 P0#2：给 crossing 入口显式传
+  `flat_locomotion:=false` 并增加 launch 断言。
+
+## 2026-07-11 13:10 LF 卸载修复复盘 + 转入全栈分层代码审计
+
+### 本轮进度小结
+
+- **LF 卸载死锁已修复并复验**：`flat_locomotion.yaml` 的 `body_shift_kp`
+  从 `0.0` 调到 `800.0` 再收敛到 `250.0`，`body_shift_max_tilt` 从隐含
+  `0.18` 收到 `0.12` 再放宽到 `0.15`。原先第三拍前腿卸载前静态法向力仅
+  `1.38 N`（阈值 `15 N`）导致 `STAGE_TIMEOUT` 的现象，在 3 次隔离重复试验中
+  0/3 复现；3 次均完成至少 2 次前腿摆动。回归断言写入
+  `test/test_research_stack_files.py`（`body_shift_kp: 250.0` /
+  `body_shift_max_tilt: 0.15`）。
+- **但尚不足以宣称 3/3 稳定**：3 次重复试验里 2 次在到达第三拍前被接触流误判
+  陈旧（LF/RF）截断，1 次因横向偏差 `80.10 mm > 80 mm` 触发 `ROUTE_CORRIDOR`。
+  这两类是 LF 修复之外的下游/基础设施问题，仍阻断完整 LAV。
+  - 汇总：`/tmp/dog2_shift_kp_250_tilt015_repeat3_20260711/run_20260711T045528Z_be0430c0/aggregate.json`。
+- **接触语义冲突已定位为高疑点**：Gazebo 接触传感器在足端离地后**静默停发**
+  而非发空消息。gait scheduler 与 swing target 用 freshness 超时把静默正确当作
+  “release”，但验收器 `_contact_health_missing(require_recent=True)` 把同一静默
+  当作 `foot_contact_*_stale` → `STALE_GROUND_TRUTH` 基础设施失败。这一契约冲突
+  是本轮重复试验中断的直接原因之一，待分层审计中系统定级。
+
+### 决策：从底层逐层扒代码，先立框架再补证据
+
+- 用户指令：不再继续盲目调平地参数，改为从机械/仿真最底层向任务验收层逐层
+  分析每一层“应该是什么样、当前是什么样、差距和根因在哪”。
+- 已在 Plan 模式确认范围为**全部运动能力**（平地、传统 effort、位置模式、
+  完整 crossing、LAV1），现役 launch 可达链路深审，历史/未接入实现只做清单与
+  风险标记；首轮产出完整审计文档 `docs/DOG2_LOCOMOTION_LAYERED_AUDIT.md`。
+- 计划文件：`.cursor/plans/dog2分层代码审计_a9d6c695.plan.md`。
+- 本轮不改任何控制代码，仅产出审计文档；修复动作留待审计结论排序后单独执行。
+
+### 续接点
+
+- 下一步按九层模板（结构真值 → 仿真执行 → 观测时间 → 命令仲裁 → 步态规划 →
+  MPC/crossing → WBC/映射 → 任务验收 → 测试治理）写审计正文，并形成跨层根因树。
+- 审计完成后再决定先修“接触新鲜度契约统一”还是“横向漂移控制”，两者都需在
+  不降低 `15 N` 安全门的前提下处理。
+
 ## 2026-07-10 22:10 LAV2-R7C4 收口 + 独立平地 crawl 栈重写（未通过行走验收）
 
 ### 目标、边界与最终结论
