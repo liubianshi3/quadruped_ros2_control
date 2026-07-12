@@ -1,6 +1,7 @@
 #include "dog2_mpc/flat_locomotion_mpc.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <stdexcept>
 #include <vector>
@@ -27,6 +28,146 @@ double clampValue(double value, double lower, double upper)
 }
 
 }  // namespace
+
+Eigen::Vector2d boundIntegratedPositionReference(
+  const Eigen::Vector2d & integrated_reference,
+  const Eigen::Vector2d & adaptive_shift,
+  const Eigen::Vector2d & measured_position,
+  double maximum_tracking_error)
+{
+  if (!integrated_reference.allFinite() || !adaptive_shift.allFinite() ||
+    !measured_position.allFinite() || !std::isfinite(maximum_tracking_error))
+  {
+    return integrated_reference;
+  }
+
+  const double bounded_maximum = std::max(0.0, maximum_tracking_error);
+  Eigen::Vector2d tracking_error =
+    integrated_reference + adaptive_shift - measured_position;
+  const double error_norm = tracking_error.norm();
+  if (error_norm <= bounded_maximum || error_norm <= 1.0e-12) {
+    return integrated_reference;
+  }
+
+  tracking_error *= bounded_maximum / error_norm;
+  return measured_position - adaptive_shift + tracking_error;
+}
+
+// Axis-split anchoring for the pre-shift target. x is body-anchored so
+// accumulated route-tracking lag cannot make the support target unreachable
+// (the acceptance corridor does not constrain the route direction). y is
+// anchored to the integrated route reference with a hard world-frame cap so
+// the reference cannot follow lateral body drift: chasing that drift was
+// observed to feed a tilt/drift spiral out of the acceptance corridor.
+Eigen::Vector2d composeAxisSplitPreShiftShift(
+  const Eigen::Vector2d & measured_position,
+  const Eigen::Vector2d & integrated_reference,
+  const Eigen::Vector2d & support_component,
+  double maximum_forward_offset,
+  double maximum_lateral_offset)
+{
+  if (!measured_position.allFinite() || !integrated_reference.allFinite() ||
+    !support_component.allFinite() || !std::isfinite(maximum_forward_offset) ||
+    !std::isfinite(maximum_lateral_offset))
+  {
+    return Eigen::Vector2d::Zero();
+  }
+
+  const Eigen::Vector2d route_anchor = measured_position - integrated_reference;
+  const double forward_bound = std::max(0.0, maximum_forward_offset);
+  const double lateral_bound = std::max(0.0, maximum_lateral_offset);
+  Eigen::Vector2d result;
+  result.x() = route_anchor.x() +
+    clampValue(support_component.x(), -forward_bound, forward_bound);
+  result.y() = clampValue(
+    route_anchor.y() + support_component.y(), -lateral_bound, lateral_bound);
+  return result;
+}
+
+Eigen::Vector2d FlatLocomotionMPC::nearestThreeFootSupportShift(
+  const Eigen::Matrix<double, 4, 3> & feet_relative_world,
+  int swing_leg,
+  double total_weight,
+  double minimum_normal_force)
+{
+  if (!feet_relative_world.allFinite() || swing_leg < 0 || swing_leg >= 4 ||
+    !std::isfinite(total_weight) || total_weight <= 0.0 ||
+    !std::isfinite(minimum_normal_force))
+  {
+    return Eigen::Vector2d::Zero();
+  }
+
+  std::array<Eigen::Vector2d, 3> stance;
+  int count = 0;
+  for (int leg = 0; leg < 4; ++leg) {
+    if (leg == swing_leg) {
+      continue;
+    }
+    stance[count] = feet_relative_world.row(leg).head<2>().transpose();
+    ++count;
+  }
+  const Eigen::Vector2d centroid =
+    (stance[0] + stance[1] + stance[2]) / 3.0;
+
+  const auto cross2 =
+    [](const Eigen::Vector2d & a, const Eigen::Vector2d & b) {
+      return a.x() * b.y() - a.y() * b.x();
+    };
+  const double doubled_area =
+    cross2(stance[1] - stance[0], stance[2] - stance[0]);
+  const double load_fraction =
+    std::max(0.0, minimum_normal_force) / total_weight;
+  // The centroid is the equal-load point and therefore maximises the
+  // minimum normal force; it is the best effort answer whenever the request
+  // cannot be met strictly inside the triangle.
+  if (std::abs(doubled_area) < 1.0e-9 || load_fraction >= 1.0 / 3.0) {
+    return centroid;
+  }
+
+  // Feet are expressed relative to the current COM, so the static normal
+  // force of stance foot i equals total_weight times the barycentric
+  // coordinate lambda_i of the COM target inside the stance triangle. The
+  // feasible set {lambda_i >= load_fraction for all i} is the stance
+  // triangle shrunk toward its centroid by that barycentric margin.
+  std::array<Eigen::Vector2d, 3> shrunk;
+  for (int vertex = 0; vertex < 3; ++vertex) {
+    shrunk[vertex] = (1.0 - 3.0 * load_fraction) * stance[vertex] +
+      3.0 * load_fraction * centroid;
+  }
+
+  const double orientation = doubled_area > 0.0 ? 1.0 : -1.0;
+  bool inside = true;
+  for (int edge = 0; edge < 3; ++edge) {
+    const Eigen::Vector2d & a = shrunk[edge];
+    const Eigen::Vector2d & b = shrunk[(edge + 1) % 3];
+    if (orientation * cross2(b - a, -a) < 0.0) {
+      inside = false;
+      break;
+    }
+  }
+  if (inside) {
+    return Eigen::Vector2d::Zero();
+  }
+
+  Eigen::Vector2d best = shrunk[0];
+  double best_norm = best.norm();
+  for (int edge = 0; edge < 3; ++edge) {
+    const Eigen::Vector2d & a = shrunk[edge];
+    const Eigen::Vector2d segment = shrunk[(edge + 1) % 3] - a;
+    const double length_squared = segment.squaredNorm();
+    double along = 0.0;
+    if (length_squared > 1.0e-12) {
+      along = clampValue(-a.dot(segment) / length_squared, 0.0, 1.0);
+    }
+    const Eigen::Vector2d candidate = a + along * segment;
+    const double candidate_norm = candidate.norm();
+    if (candidate_norm < best_norm) {
+      best = candidate;
+      best_norm = candidate_norm;
+    }
+  }
+  return best;
+}
 
 FlatLocomotionMPC::FlatLocomotionMPC(
   double mass,

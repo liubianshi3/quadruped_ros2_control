@@ -40,6 +40,19 @@ struct FlatMPCSolution
   double wrench_residual = 0.0;
 };
 
+Eigen::Vector2d boundIntegratedPositionReference(
+  const Eigen::Vector2d & integrated_reference,
+  const Eigen::Vector2d & adaptive_shift,
+  const Eigen::Vector2d & measured_position,
+  double maximum_tracking_error);
+
+Eigen::Vector2d composeAxisSplitPreShiftShift(
+  const Eigen::Vector2d & measured_position,
+  const Eigen::Vector2d & integrated_reference,
+  const Eigen::Vector2d & support_component,
+  double maximum_forward_offset,
+  double maximum_lateral_offset);
+
 class FlatLocomotionMPC
 {
 public:
@@ -89,6 +102,12 @@ public:
     double total_weight,
     double minimum_normal_force,
     Eigen::Vector3d * normal_forces = nullptr);
+
+  static Eigen::Vector2d nearestThreeFootSupportShift(
+    const Eigen::Matrix<double, 4, 3> & feet_relative_world,
+    int swing_leg,
+    double total_weight,
+    double minimum_normal_force);
 
   void reset();
 

@@ -117,6 +117,7 @@ private:
     declare_parameter("body_shift_max_angular_speed", 0.15);
     declare_parameter("body_shift_max_tilt", 0.12);
     declare_parameter("support_ready_min_normal_force", 2.0);
+    declare_parameter("support_target_force_margin", 25.0);
     declare_parameter("support_center_gain", 1.0);
     declare_parameter("support_center_max_speed", 0.10);
     declare_parameter("support_center_max_forward_offset", 0.08);
@@ -235,6 +236,8 @@ private:
     body_shift_max_tilt_ = get_parameter("body_shift_max_tilt").as_double();
     support_ready_min_normal_force_ =
       get_parameter("support_ready_min_normal_force").as_double();
+    support_target_force_margin_ = std::max(
+      0.0, get_parameter("support_target_force_margin").as_double());
     support_center_gain_ =
       get_parameter("support_center_gain").as_double();
     support_center_max_speed_ =
@@ -452,36 +455,30 @@ private:
     integrated_yaw_reference_ = wrapAngle(
       integrated_yaw_reference_ + control_dt_ * slewed_command_(2));
 
-    Eigen::Vector2d position_error =
-      integrated_position_reference_.head<2>() -
-      body_state_.position.head<2>();
-    if (position_error.norm() > max_position_error_) {
-      position_error *= max_position_error_ / position_error.norm();
-      integrated_position_reference_.head<2>() =
-        body_state_.position.head<2>() + position_error;
-    }
     const double yaw_error = clampValue(
       wrapAngle(integrated_yaw_reference_ - body_state_.rpy.z()),
       -max_yaw_error_, max_yaw_error_);
 
     if (pre_shifting) {
-      Eigen::Vector2d support_centroid = Eigen::Vector2d::Zero();
-      for (int leg = 0; leg < 4; ++leg) {
-        if (leg != upcoming_swing_leg) {
-          support_centroid += feet_relative_world.row(leg).head<2>().transpose();
-        }
-      }
-      support_centroid /= 3.0;
-      const Eigen::Vector2d desired_center =
-        body_state_.position.head<2>() +
-        support_center_gain_ * support_centroid;
-      Eigen::Vector2d desired_shift =
-        desired_center - integrated_position_reference_.head<2>();
-      desired_shift.x() = clampValue(
-        desired_shift.x(), -support_center_max_forward_offset_,
-        support_center_max_forward_offset_);
-      desired_shift.y() = clampValue(
-        desired_shift.y(), -support_center_max_lateral_offset_,
+      // The target is the nearest COM point whose three-foot static solve
+      // reaches gate + margin; the 25 N margin saturates it to the
+      // equal-load centroid so the 15 N gate is crossed mid-transit despite
+      // the tilt-induced COM shortfall (an integral push was tried instead
+      // and over-accumulated against this deep target, tipping the robot).
+      const Eigen::Vector2d support_shift =
+        FlatLocomotionMPC::nearestThreeFootSupportShift(
+        feet_relative_world, upcoming_swing_leg, mass_ * 9.81,
+        support_ready_min_normal_force_ + support_target_force_margin_);
+      // Axis-split anchoring: x re-anchors to the measured body so route
+      // lag cannot make the support target unreachable; y is capped in the
+      // world frame around the integrated route reference so the reference
+      // cannot chase lateral drift into the acceptance corridor.
+      const Eigen::Vector2d desired_shift =
+        composeAxisSplitPreShiftShift(
+        body_state_.position.head<2>(),
+        integrated_position_reference_.head<2>(),
+        support_center_gain_ * support_shift,
+        support_center_max_forward_offset_,
         support_center_max_lateral_offset_);
       Eigen::Vector2d center_step =
         desired_shift - adaptive_body_shift_world_;
@@ -494,6 +491,12 @@ private:
       }
       adaptive_body_shift_world_ += center_step;
     }
+    integrated_position_reference_.head<2>() =
+      boundIntegratedPositionReference(
+      integrated_position_reference_.head<2>(),
+      adaptive_body_shift_world_,
+      body_state_.position.head<2>(),
+      max_position_error_);
     body_reference_.position = integrated_position_reference_;
     body_reference_.position.head<2>() += adaptive_body_shift_world_;
     body_reference_.position.z() = target_height_;
@@ -624,12 +627,15 @@ private:
     RCLCPP_INFO_THROTTLE(
       get_logger(), *get_clock(), 1000,
       "flat MPC mode=%s p=[%.3f %.3f %.3f] ref=[%.3f %.3f %.3f] "
+      "global=[%.3f %.3f] adaptive=[%.3f %.3f] "
       "rpy=[%.3f %.3f %.3f] wrench=[%.1f %.1f %.1f %.2f %.2f %.2f] "
       "residual=%.3f contacts=[%d%d%d%d]",
       was_moving_ ? "walk" : "stand",
       body_state_.position.x(), body_state_.position.y(), body_state_.position.z(),
       body_reference_.position.x(), body_reference_.position.y(),
       body_reference_.position.z(),
+      integrated_position_reference_.x(), integrated_position_reference_.y(),
+      adaptive_body_shift_world_.x(), adaptive_body_shift_world_.y(),
       body_state_.rpy.x(), body_state_.rpy.y(), body_state_.rpy.z(),
       solution.desired_wrench(0), solution.desired_wrench(1),
       solution.desired_wrench(2), solution.desired_wrench(3),
@@ -657,6 +663,7 @@ private:
   double body_shift_max_angular_speed_ = 0.15;
   double body_shift_max_tilt_ = 0.12;
   double support_ready_min_normal_force_ = 2.0;
+  double support_target_force_margin_ = 25.0;
   double support_center_gain_ = 1.0;
   double support_center_max_speed_ = 0.10;
   double support_center_max_forward_offset_ = 0.08;
