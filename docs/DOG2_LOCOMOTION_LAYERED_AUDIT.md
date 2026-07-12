@@ -286,12 +286,16 @@ approach-command→gait→contact phase 的可达性测试。
     `[-50,+60] mm`；机身最大横向偏移约 `62.3 mm`，未再先触发
     `ROUTE_CORRIDOR`。该 run 完成两轮四腿 swing 后在下一次 LF 预移停住，最终为
     `STAGE_TIMEOUT`，所以这里只闭合 reference 契约，不宣称 full LAV 已通过。
-- 【P1/CODE+RUN/FLAT】**touchdown liveness 是独立放大器**：
-  `crawl_max_swing_sec=1.20` 只设置 `late_touchdown` 并以 50 Hz 重复打 ERROR，
-  不失败、不回收也不进入安全状态（`gait_scheduler_node.py:165-190,398-401`）。
-  trial 003 的末次 LF swing 持续至少 `9.16 s`；本轮隔离复现的 RH 超过 `1.20 s`
-  后继续 SWING，约 `1.94 s` 才接触且几乎同时发生 `BASE_CONTACT`。它不是 trial 001
-  横漂的必要原因，但会进一步降低 duty/progress 并把偶发落足失败放大为倒地。
+- 【已闭合/CODE+TEST+RUN/FLAT】**touchdown/SHIFT/SETTLE liveness 契约**（2026-07-12）：
+  `ContactAwareCrawl` 现在保证任何状态都不能无限等待外部证据——SWING 超过
+  `crawl_max_swing_sec=1.20` 强制进入 SETTLE（腿改判 stance，由 MPC/WBC 地面
+  搜索确定性下压；SETTLE 仍要求真实全接触才能进入下一 SHIFT，15 N 卸载门
+  未稀释）；SHIFT/SETTLE 超过 `crawl_max_shift_sec=8.0`/`crawl_max_settle_sec=3.0`
+  锁存 FAULT（全 stance + body-shift 冻结的安全站立，仅停走指令可复位）。
+  历史证据：trial 003 末次 LF swing 悬停 `9.16 s`、隔离复现 RH 超时后
+  `1.94 s` 才接触并几乎同时 `BASE_CONTACT`、六跑链 run2 的 50 s SHIFT 死锁。
+  修复后单跑（2026-07-12 cadence 首跑）唯一一次 forced_settle 在 1.20 s 收敛，
+  两拍后恢复正常摆动序列；调度器现按状态迁移逐条输出窗口时长供 cadence 归因。
 - 【P2/CODE+RUN/LAV】现有 `stance_slip` 不能单独证明真实地面滑移：三次报告的足位姿源
   都是 `gazebo_odom+joint_state_pinocchio`，并非 Gazebo 直接 link pose；算法又对
   每个接触采样的无符号位移逐项累加（`acceptance_metrics.py:396-409`），CSV 不保存足
@@ -557,9 +561,9 @@ flowchart TD
 | 7 | OPEN | P0 | CROSS | CODE | 5/6/7 | crossing stage 没有转换为可执行 swing/joint 目标，腿穿越动作不可达 |
 | 8 | **CLOSED** | 原 P1 | FLAT+LAV | CODE+TEST+RUN | 4/6/8 | global/local 限幅已按最终 shifted target 解耦；单跑 global y 无棘轮漂移且未越走廊 |
 | 9 | **CLOSED** | 原 P1 | FLAT | CODE+TEST+RUN | 4/6 | body-shift 目标/锚定契约闭合：质心饱和目标 + x 机身/y 路线硬帽按轴锚定；六跑证据链，最优跑 13 swing 无安全失败 |
-| 9b | OPEN | P1 | FLAT+LAV | RUN | 6/8 | 当前最早门：cadence ~6 mm/s（需 ~20），全支撑清零+卸载秒级等待+late touchdown 拖长共同致 STAGE_TIMEOUT |
-| 9c | OPEN | P1 | FLAT | CODE+RUN | 6/7 | 姿态柔度过低（2–4 N·m 即 roll 0.13–0.27 rad），吃掉 15–19 N 静力裕量；最小位移目标被阻塞，margin 25 N 不得下调直至姿态刚度批次 |
-| 10 | OPEN | P1 | FLAT | CODE+RUN | 5/8 | max_swing 只告警不失败/回收，实测 9 s swing 与 late-touchdown BASE_CONTACT；最优跑仍有 29 条告警 |
+| 9b | OPEN | P1 | FLAT+LAV | RUN | 6/8 | 当前最早门：cadence。07-12 首个归因单跑量化：走行 31 s 中 SHIFT（全支撑清零）占 ~19 s/61%（均值 1.6 s、最长 3.42 s，名义 0.45），SWING 占 ~9.4 s/30%（均值 0.86 s，名义 0.45），SETTLE ~8%；有效推进 ~10 mm/s 仍 < 20 |
+| 9c | OPEN | P1 | FLAT | CODE+RUN | 6/7 | 姿态柔度过低（2–4 N·m 即 roll 0.13–0.27 rad），吃掉 15–19 N 静力裕量；最小位移目标被阻塞，margin 25 N 不得下调直至姿态刚度批次。07-12 单跑在 RH 预移中 0.5 s 内 roll 速率冲到 3.07 rad/s、tilt 0.80 → TILT_LIMIT（48.7 s），为该问题新增运行证据（单跑，未重复） |
+| 10 | **CLOSED** | 原 P1 | FLAT | CODE+TEST+RUN | 5/8 | liveness 契约闭合：max_swing 强制 SETTLE（保留全接触门）、SHIFT/SETTLE 超时锁存安全 FAULT、状态窗口时长逐条记录；单跑 1 次 forced_settle 1.20 s 收敛且序列恢复 |
 | 11 | OPEN | P1 | ALL | CODE | 7 | stale effort 默认保持末值，NaN/Inf/fallback 契约不完整 |
 | 12 | OPEN | P1 | CROSS | CODE | 8 | crossing checker 不验证阶段顺序、动作时序、障碍接触与最终 COMPLETED |
 | 13 | OPEN | P1 | CROSS+ALL | CODE | 9 | crossing/dynamics 测试未注册；test rail 限位 rh/rf 与 URDF 相反 |
@@ -617,10 +621,14 @@ flowchart TD
      （TILT_LIMIT）并删除。
    - 最优单跑 13 swing、横向 ≤59 mm、无安全失败；剩余 scheduler x/y 假契约与
      ready 语义清理降级为治理项。
-4. **下一批：cadence/推进与 touchdown liveness**：当前首门是 `~6 mm/s` 推进
-   （需 ~20 mm/s）。构成为全支撑段路径速度清零、卸载等待秒级、late touchdown
-   拖长摆动。max_swing/SHIFT 到期必须进入确定 fault/safe 状态，不能无限等待；
-   随后做全支撑窗口与等待时长的 cadence 归因，不与姿态刚度混调。
+4. **cadence/推进与 touchdown liveness**：liveness 半批已闭合（2026-07-12）：
+   max_swing 强制 SETTLE、SHIFT/SETTLE 超时锁存安全 FAULT、状态窗口时长逐条
+   记录。首个归因单跑给出预算构成：SHIFT 61%（均值 1.6 s，其中卸载等待为主）、
+   SWING 30%（均值 0.86 s）、SETTLE 8%，推进 ~10 mm/s 仍 < 20 mm/s。下一半批
+   的候选（按证据排序）：缩短卸载等待（与 9c 姿态刚度耦合，需先修刚度或
+   降低 settle 等待构成）、全支撑段路径速度不再整段清零、swing 时长回归名义。
+   该跑以 TILT_LIMIT 结束（RH 预移中 roll 速率 3.07 rad/s，9c 证据），需三次
+   隔离重复区分随机性后再定单机制修复点。
 5. **姿态刚度批次（阻塞"最小位移目标"重启）**：量化并提升侧倾有效刚度
    （现 ~20 N·m/rad 量级，2–4 N·m 即 roll 0.13–0.27 rad），使 base 推移接近
    COM 推移后，才回退 `support_target_force_margin` 至最小位移目标。
@@ -681,7 +689,11 @@ flowchart TD
   `composeAxisSplitPreShiftShift`）；`src/dog2_mpc/src/flat_mpc_node.cpp:462-493`；
   margin 语义 `src/dog2_bringup/config/flat_locomotion.yaml:36-46`；
   钉扎断言 `src/dog2_bringup/test/test_research_stack_files.py`
-- crawl touchdown liveness：`src/dog2_gait_planner/dog2_gait_planner/gait_scheduler_node.py:159-190,387-401`
+- crawl liveness 契约（forced settle / FAULT / 窗口时长日志）：
+  `src/dog2_gait_planner/dog2_gait_planner/gait_scheduler_node.py`
+  （`ContactAwareCrawl.update`、`_log_crawl_progress`）；
+  回归 `src/dog2_gait_planner/test/test_gait_scheduler.py`；
+  参数 `src/dog2_gait_planner/config/gait_scheduler.yaml`
 - stance slip 累加与足位姿 fallback：`src/dog2_bringup/dog2_bringup/acceptance_metrics.py:373-416`；
   `locomotion_acceptance.py:647-762`
 - crossing PRE_APPROACH：`src/dog2_mpc/src/mpc_node_complete.cpp:742-757`
@@ -710,4 +722,7 @@ flowchart TD
   `/tmp/dog2_flat_centroid_depth_20260711/run_20260711T105212Z_132793a5/`（镜像螺旋）、
   `/tmp/dog2_flat_axis_split_20260711/run_20260711T110153Z_c79b7765/`（积分翻倒）、
   `/tmp/dog2_flat_axis_split_prop_20260711/run_20260711T110827Z_a965d794/`（最优形态）
+- liveness 契约 + cadence 归因首跑（domain 218，11 swing，SHIFT 61%/SWING 30%/
+  SETTLE 8%，1 次 forced_settle 收敛，终判 TILT_LIMIT 48.7 s）：
+  `/tmp/dog2_flat_cadence_liveness_20260712/run_20260712T033857Z_a66d84ab/`
 - 历史链路（已漂移）：`docs/MODULE_RESEARCH_BASELINE.md`、`docs/DOG2_WBC_MPC_COMPLETE_LOG.md`

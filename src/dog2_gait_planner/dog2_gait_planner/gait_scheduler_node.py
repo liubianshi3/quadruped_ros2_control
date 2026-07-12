@@ -45,7 +45,9 @@ class CrawlOutput:
     active_leg: int
     body_shift_x: float
     body_shift_y: float
-    late_touchdown: bool
+    # One-shot liveness event emitted on the tick a deadline expires:
+    # "forced_settle", "shift_timeout_fault" or "settle_timeout_fault".
+    event: str = ""
 
 
 def crawl_body_shift(leg: int, scale: float = 0.65) -> tuple[float, float]:
@@ -64,7 +66,22 @@ def crawl_body_shift(leg: int, scale: float = 0.65) -> tuple[float, float]:
 
 
 class ContactAwareCrawl:
-    """Three-foot-support crawl with release/touchdown confirmation."""
+    """Three-foot-support crawl with release/touchdown confirmation.
+
+    Liveness contract: no state may wait on external evidence forever.
+
+    - SWING past ``max_swing_sec`` without a confirmed touchdown is forced
+      into SETTLE. The leg is commanded as stance again, so the MPC/WBC
+      ground-search presses it down deterministically instead of the swing
+      PD holding it in the air (measured 9.16 s hovering swings ended in
+      BASE_CONTACT). SETTLE still requires real all-foot contact before the
+      next SHIFT, so the 15 N unload gate is never diluted.
+    - SHIFT/SETTLE past their deadlines latch FAULT: a safe stand that keeps
+      all-stance phases and freezes the body-shift command (snapping it to
+      zero previously caused a 2-3 cm reference reversal). FAULT clears only
+      through a stop command. The measured alternative was a 50 s silent
+      unload deadlock inside a 51.3 s stage budget.
+    """
 
     def __init__(
         self,
@@ -73,6 +90,8 @@ class ContactAwareCrawl:
         swing_sec: float,
         settle_sec: float,
         max_swing_sec: float,
+        max_shift_sec: float,
+        max_settle_sec: float,
         body_shift_scale: float,
         contact_aware: bool,
     ) -> None:
@@ -80,6 +99,8 @@ class ContactAwareCrawl:
         self.swing_sec = max(0.05, float(swing_sec))
         self.settle_sec = max(0.0, float(settle_sec))
         self.max_swing_sec = max(self.swing_sec, float(max_swing_sec))
+        self.max_shift_sec = max(self.pre_shift_sec, float(max_shift_sec))
+        self.max_settle_sec = max(self.settle_sec, float(max_settle_sec))
         self.body_shift_scale = max(0.0, float(body_shift_scale))
         self.contact_aware = bool(contact_aware)
         self._moving = False
@@ -92,41 +113,51 @@ class ContactAwareCrawl:
         self.release_seen = False
         self.shift_start_x = 0.0
         self.shift_start_y = 0.0
+        self.fault_shift_x = 0.0
+        self.fault_shift_y = 0.0
 
     @property
     def active_leg(self) -> int:
         return CRAWL_SWING_ORDER[self.order_index]
 
-    def _output(self, late_touchdown: bool = False) -> CrawlOutput:
-        phases = [ContactPhase.STANCE] * 4
-        if self.state == "SWING":
-            phases[self.active_leg] = ContactPhase.SWING
-
+    def _commanded_shift(self) -> tuple[float, float]:
         target_x, target_y = crawl_body_shift(
             self.active_leg, self.body_shift_scale
         )
         if self.state == "SHIFT":
             ratio = min(1.0, self.elapsed_sec / max(self.pre_shift_sec, 1e-6))
             blend = ratio * ratio * (3.0 - 2.0 * ratio)
-            body_shift_x = self.shift_start_x + blend * (
-                target_x - self.shift_start_x
+            return (
+                self.shift_start_x + blend * (target_x - self.shift_start_x),
+                self.shift_start_y + blend * (target_y - self.shift_start_y),
             )
-            body_shift_y = self.shift_start_y + blend * (
-                target_y - self.shift_start_y
-            )
+        # Keep the COM inside the completed leg's support triangle through
+        # touchdown. Returning to zero here caused a 2-3 cm lateral
+        # reference reversal immediately after impact.
+        return target_x, target_y
+
+    def _latch_fault(self) -> None:
+        self.fault_shift_x, self.fault_shift_y = self._commanded_shift()
+        self.state = "FAULT"
+        self.elapsed_sec = 0.0
+
+    def _output(self, event: str = "") -> CrawlOutput:
+        phases = [ContactPhase.STANCE] * 4
+        if self.state == "SWING":
+            phases[self.active_leg] = ContactPhase.SWING
+
+        if self.state == "FAULT":
+            body_shift_x = self.fault_shift_x
+            body_shift_y = self.fault_shift_y
         else:
-            # Keep the COM inside the completed leg's support triangle through
-            # touchdown. Returning to zero here caused a 2-3 cm lateral
-            # reference reversal immediately after impact.
-            body_shift_x = target_x
-            body_shift_y = target_y
+            body_shift_x, body_shift_y = self._commanded_shift()
         return CrawlOutput(
             phases=phases,
             state=self.state,
             active_leg=self.active_leg,
             body_shift_x=body_shift_x,
             body_shift_y=body_shift_y,
-            late_touchdown=late_touchdown,
+            event=event,
         )
 
     def update(
@@ -147,7 +178,6 @@ class ContactAwareCrawl:
                 active_leg=self.active_leg,
                 body_shift_x=0.0,
                 body_shift_y=0.0,
-                late_touchdown=False,
             )
         if not self._moving:
             self.reset()
@@ -155,6 +185,7 @@ class ContactAwareCrawl:
 
         self.elapsed_sec += max(0.0, float(dt_sec))
         all_contact = all(actual_contacts)
+        event = ""
 
         if self.state == "SHIFT":
             ready = (not self.contact_aware or all_contact) and shift_ready
@@ -162,6 +193,9 @@ class ContactAwareCrawl:
                 self.state = "SWING"
                 self.elapsed_sec = 0.0
                 self.release_seen = False
+            elif self.elapsed_sec >= self.max_shift_sec:
+                self._latch_fault()
+                event = "shift_timeout_fault"
         elif self.state == "SWING":
             active_contact = actual_contacts[self.active_leg]
             if not active_contact:
@@ -171,6 +205,10 @@ class ContactAwareCrawl:
             if self.elapsed_sec >= self.swing_sec and ready:
                 self.state = "SETTLE"
                 self.elapsed_sec = 0.0
+            elif self.contact_aware and self.elapsed_sec > self.max_swing_sec:
+                self.state = "SETTLE"
+                self.elapsed_sec = 0.0
+                event = "forced_settle"
         elif self.state == "SETTLE":
             ready = not self.contact_aware or all_contact
             if self.elapsed_sec >= self.settle_sec and ready:
@@ -181,13 +219,11 @@ class ContactAwareCrawl:
                 self.state = "SHIFT"
                 self.elapsed_sec = 0.0
                 self.release_seen = False
+            elif self.elapsed_sec >= self.max_settle_sec:
+                self._latch_fault()
+                event = "settle_timeout_fault"
 
-        late = (
-            self.state == "SWING"
-            and self.contact_aware
-            and self.elapsed_sec > self.max_swing_sec
-        )
-        return self._output(late)
+        return self._output(event)
 
 
 def compute_phase_array(
@@ -244,6 +280,14 @@ class GaitSchedulerNode(Node):
         self.declare_parameter("crawl_swing_sec", 0.45)
         self.declare_parameter("crawl_settle_sec", 0.20)
         self.declare_parameter("crawl_max_swing_sec", 1.20)
+        # Liveness deadlines. Healthy unload waits measured a few seconds;
+        # the 8 s cap converts the observed 50 s silent deadlock into an
+        # attributable fault well inside the 45-51 s stage budgets.
+        self.declare_parameter("crawl_max_shift_sec", 8.0)
+        # Post-forced-settle ground search from the ~5 mm touchdown
+        # overshoot needs well under a second; 3 s marks a leg that cannot
+        # reach the ground at all.
+        self.declare_parameter("crawl_max_settle_sec", 3.0)
         self.declare_parameter("crawl_body_shift_scale", 0.65)
         for leg in LEG_NAMES:
             self.declare_parameter(
@@ -279,11 +323,17 @@ class GaitSchedulerNode(Node):
             swing_sec=float(self.get_parameter("crawl_swing_sec").value),
             settle_sec=float(self.get_parameter("crawl_settle_sec").value),
             max_swing_sec=float(self.get_parameter("crawl_max_swing_sec").value),
+            max_shift_sec=float(self.get_parameter("crawl_max_shift_sec").value),
+            max_settle_sec=float(
+                self.get_parameter("crawl_max_settle_sec").value
+            ),
             body_shift_scale=float(
                 self.get_parameter("crawl_body_shift_scale").value
             ),
             contact_aware=self._contact_aware,
         )
+        self._crawl_last_state = "STAND"
+        self._crawl_state_since_sec = self._now_sec()
 
         self.create_subscription(
             Twist,
@@ -384,6 +434,28 @@ class GaitSchedulerNode(Node):
             and self._body_shift_error <= self._body_shift_tolerance_m
         )
 
+    def _log_crawl_progress(self, crawl: CrawlOutput) -> None:
+        """One line per liveness event and per state transition.
+
+        The transition durations are the cadence-attribution record: they
+        say exactly how long each SHIFT/SWING/SETTLE window took, so the
+        per-cycle budget can be reconstructed from the node log alone.
+        """
+        if crawl.event:
+            self.get_logger().error(
+                f"crawl {crawl.event}: leg={LEG_NAMES[crawl.active_leg]} "
+                f"after {self._now_sec() - self._crawl_state_since_sec:.2f}s"
+            )
+        if crawl.state != self._crawl_last_state:
+            now = self._now_sec()
+            self.get_logger().info(
+                f"crawl {self._crawl_last_state}->{crawl.state} "
+                f"leg={LEG_NAMES[crawl.active_leg]} "
+                f"held={now - self._crawl_state_since_sec:.2f}s"
+            )
+            self._crawl_last_state = crawl.state
+            self._crawl_state_since_sec = now
+
     def _on_timer(self) -> None:
         self._elapsed = (self._elapsed + 1.0 / self._publish_rate) % self._cycle_time
         phase = self._elapsed / self._cycle_time
@@ -395,10 +467,7 @@ class GaitSchedulerNode(Node):
                 self._body_shift_ready(),
             )
             phases = crawl.phases
-            if crawl.late_touchdown:
-                self.get_logger().error(
-                    f"crawl late touchdown: {LEG_NAMES[crawl.active_leg]}"
-                )
+            self._log_crawl_progress(crawl)
         else:
             crawl = None
             phases = compute_phase_array(

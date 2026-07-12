@@ -18,6 +18,13 @@ dog2_gait_scheduler:
     crawl_swing_sec: 0.45
     crawl_settle_sec: 0.20
     crawl_max_swing_sec: 1.20
+    # Liveness deadlines (DEVELOPMENT_LOG 2026-07-12): a swing without
+    # confirmed touchdown is forced into SETTLE at max_swing; SHIFT/SETTLE
+    # past these caps latch a safe standing FAULT instead of waiting
+    # forever. Healthy unload waits are a few seconds; 8 s marks the
+    # measured 50 s deadlock class without clipping normal cycles.
+    crawl_max_shift_sec: 8.0
+    crawl_max_settle_sec: 3.0
     crawl_body_shift_scale: 0.65
     cmd_vel_topic: /cmd_vel
     contact_phase_topic: /dog2/gait/contact_phase

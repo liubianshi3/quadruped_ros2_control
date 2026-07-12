@@ -1,5 +1,59 @@
 # DEVELOPMENT_LOG
 
+## 2026-07-12 11:50 crawl liveness 契约 + cadence 归因首跑
+
+### 目标
+
+- 按审计台账 #10/9b 的排序做 cadence 批次的第一半：max_swing/SHIFT/SETTLE
+  到期必须进入确定的 fault/safe 状态，不能无限等待；同时把每个状态窗口的
+  实际时长变成可归因记录。不动 15 N 门、走廊、gain、落足或姿态刚度。
+
+### 改动
+
+- `gait_scheduler_node.py` `ContactAwareCrawl` 落地 liveness 契约：
+  - SWING 超 `crawl_max_swing_sec=1.20` 强制进入 SETTLE（`forced_settle`
+    事件）：腿改判 stance，由 MPC/WBC 地面搜索确定性下压；SETTLE 仍要求
+    真实全接触才能进入下一 SHIFT，15 N 卸载门与接触确认语义未稀释。
+    替换原"只打 ERROR、永远等待"的 late_touchdown 行为。
+  - SHIFT 超 `crawl_max_shift_sec=8.0`、SETTLE 超 `crawl_max_settle_sec=3.0`
+    锁存 FAULT：全 stance + body-shift 冻结（避免回零造成的 2–3 cm 参考
+    反转）+ 继续发布 z 腿码使 MPC 保持位置保持；FAULT 吸收态，仅停走指令
+    复位。8 s 上限依据：健康卸载等待为秒级（六跑链 run6），历史死锁为
+    50 s（run2），阶段预算 45–51 s。
+  - `CrawlOutput.late_touchdown` 字段改为一次性 `event` 字段
+    （forced_settle/shift_timeout_fault/settle_timeout_fault）。
+  - 节点新增 `_log_crawl_progress`：每次状态迁移输出上一状态实际持续时长
+    （cadence 归因的原始记录），liveness 事件单条 ERROR，不再 50 Hz 刷屏。
+- `gait_scheduler.yaml` 落两个新参数并注明依据；
+  `test_gait_scheduler.py` 重写 late-touchdown 用例为 forced-settle 契约，
+  新增 5 条回归（强制 settle 后仍要求全接触、SHIFT/SETTLE 超时 FAULT、
+  FAULT 冻结 shift 且吸收、deadline 拍 ready 优先推进、停走复位）。
+
+### 证据
+
+- `colcon build dog2_gait_planner` PASS；pytest `dog2_gait_planner/test`
+  23 PASS（含 swing 11 条）。
+- 隔离单跑（domain 218）
+  `/tmp/dog2_flat_cadence_liveness_20260712/run_20260712T033857Z_a66d84ab/`：
+  - liveness 契约按设计工作：唯一一次 `forced_settle`（LF，1.20 s）后两拍
+    内恢复正常摆动序列；无 SHIFT/SETTLE FAULT；无基础设施失败。
+  - cadence 归因（walk 段 ~31 s，11 swing，投影 0.308 m ≈ 10 mm/s，仍
+    < 20 mm/s）：SHIFT 占 ~19 s/61%（均值 1.6 s、最长 3.42 s，名义
+    0.45——卸载等待为主）、SWING ~9.4 s/30%（均值 0.86 s，名义 0.45）、
+    SETTLE ~2.7 s/8%。预算大头明确是 SHIFT 卸载等待。
+  - 终判 `TILT_LIMIT`（48.7 s，OUTBOUND）：RH 预移中 0.5 s 内角速度冲到
+    3.07 rad/s、tilt 0.80 rad。发生在 forced_settle 六秒/两次正常摆动之后，
+    与 9c 姿态柔度问题一致（预移推力 + 低侧倾刚度），暂按单跑随机性记录，
+    不据此改参数。
+- 跑后确认无遗留 Gazebo/LAV 进程；`git diff --check` 干净。
+
+### 续接点
+
+- cadence 下一半批（先做三次隔离重复再定单机制）：候选为缩短卸载等待
+  （与 9c 姿态刚度耦合）、全支撑段路径速度不整段清零、swing 时长回归名义。
+- TILT_LIMIT 需在重复中观察复现率；若稳定复现且都在预移窗口，则升级 9c
+  优先级并先做姿态刚度批次。
+
 ## 2026-07-12 11:20 收口提交：07-11 全批次入库 + swing 接触同步批次补记
 
 ### 说明
